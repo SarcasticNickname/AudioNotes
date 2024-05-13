@@ -10,8 +10,6 @@ dependencyResolutionManagement {
     repositories {
         google() // Репозиторий Google для библиотек
         mavenCentral() // Центральный репозиторий Maven для библиотек
-        // Можно добавить другие, если нужно (например, Jitpack)
-        // maven { url = uri("https://jitpack.io") }
     }
 }
 

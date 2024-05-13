@@ -176,23 +176,15 @@ class AudioPlayer @Inject constructor(
     }
 
     private fun startPositionUpdates() {
-        stopPositionUpdates() // Останавливаем предыдущие обновления, если были
+        Log.d(TAG, "startPositionUpdates called")
+        stopPositionUpdates()
         positionUpdateJob = playerScope.launch {
-            while (_playerState.value == PlayerState.PLAYING && isActive) {
-                try {
-                    _currentPositionMs.value = mediaPlayer?.currentPosition ?: 0
-                } catch (e: IllegalStateException) {
-                    // MediaPlayer может быть уже освобожден
-                    Log.w(
-                        TAG,
-                        "IllegalStateException while getting currentPosition, stopping updates.",
-                        e
-                    )
-                    stopPositionUpdates()
-                    break
-                }
+            while (isActive && (mediaPlayer?.isPlaying == true)) {
+                _currentPositionMs.value = mediaPlayer?.currentPosition ?: 0
                 delay(POSITION_UPDATE_INTERVAL_MS)
             }
+            _currentPositionMs.value = mediaPlayer?.currentPosition ?: 0
+            Log.d(TAG, "stopPositionUpdates: job ended")
         }
     }
 

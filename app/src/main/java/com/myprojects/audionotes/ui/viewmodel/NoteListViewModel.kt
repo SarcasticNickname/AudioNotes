@@ -1,7 +1,9 @@
 package com.myprojects.audionotes.ui.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkManager
 import com.myprojects.audionotes.data.local.entity.Note
 import com.myprojects.audionotes.data.repository.NoteRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -9,7 +11,6 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-// Состояние UI для экрана списка заметок
 data class NoteListUiState(
     val notes: List<Note> = emptyList(),
     val isLoading: Boolean = true,
@@ -18,11 +19,16 @@ data class NoteListUiState(
 
 @HiltViewModel
 class NoteListViewModel @Inject constructor(
-    private val noteRepository: NoteRepository
+    private val noteRepository: NoteRepository,
+    private val workManager: WorkManager // Внедряем WorkManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(NoteListUiState())
     val uiState: StateFlow<NoteListUiState> = _uiState.asStateFlow()
+
+    companion object {
+        private const val TAG = "NoteListViewModel"
+    }
 
     init {
         loadNotes()
@@ -30,54 +36,51 @@ class NoteListViewModel @Inject constructor(
 
     private fun loadNotes() {
         viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
             noteRepository.getAllNotes()
-                .onStart { _uiState.update { it.copy(isLoading = true) } }
                 .catch { e ->
-                    _uiState.update { it.copy(isLoading = false, error = e.localizedMessage ?: "Failed to load notes") }
-                    // Можно добавить логирование ошибки
-                }
-                .collect { notesList ->
+                    Log.e(TAG, "Error loading notes", e)
                     _uiState.update {
                         it.copy(
-                            notes = notesList,
                             isLoading = false,
-                            error = null // Сбрасываем ошибку при успешной загрузке
+                            error = e.localizedMessage ?: "Failed to load notes"
                         )
                     }
+                }
+                .collect { notesList ->
+                    _uiState.update { it.copy(notes = notesList, isLoading = false, error = null) }
                 }
         }
     }
 
-    // Функция для создания новой заметки
-    // Возвращает ID новой заметки, чтобы экран мог на нее перейти
     fun createNewNote(onNoteCreated: (Long) -> Unit) {
         viewModelScope.launch {
             try {
                 val newNoteId = noteRepository.createNewNote()
-                onNoteCreated(newNoteId) // Передаем ID для навигации
+                if (newNoteId != -1L) {
+                    onNoteCreated(newNoteId)
+                } else {
+                    _uiState.update { it.copy(error = "Failed to create new note (invalid ID).") }
+                }
             } catch (e: Exception) {
+                Log.e(TAG, "Error creating new note", e)
                 _uiState.update { it.copy(error = e.localizedMessage ?: "Failed to create note") }
-                // Логирование ошибки
             }
         }
     }
 
-    // Функция для удаления заметки
     fun deleteNote(noteId: Long) {
         viewModelScope.launch {
             try {
-                // Перед удалением получим объект Note по ID, так как DAO требует сам объект
-                val noteToDelete = noteRepository.getNoteById(noteId)
-                if (noteToDelete != null) {
-                    // TODO: Перед удалением из БД нужно будет удалить связанные аудиофайлы!
-                    // Логика удаления файлов будет в репозитории или специальном менеджере
-                    noteRepository.deleteNoteById(noteId) // Используем новый метод репозитория
-                } else {
-                    _uiState.update { it.copy(error = "Note not found for deletion") }
-                }
+                val workTag = "reminder_note_$noteId"
+                workManager.cancelUniqueWork(workTag) // Отменяем связанную работу
+                Log.i(TAG, "Cancelled reminder work for note $noteId before deletion.")
+
+                noteRepository.deleteNoteById(noteId)
+                // Список обновится автоматически через Flow
             } catch (e: Exception) {
+                Log.e(TAG, "Error deleting note $noteId", e)
                 _uiState.update { it.copy(error = e.localizedMessage ?: "Failed to delete note") }
-                // Логирование ошибки
             }
         }
     }

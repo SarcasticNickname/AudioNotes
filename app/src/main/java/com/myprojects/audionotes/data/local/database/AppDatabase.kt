@@ -12,8 +12,8 @@ import com.myprojects.audionotes.util.Converters // Импортируем на�
 
 @Database(
     entities = [Note::class, NoteBlock::class],
-    version = 1, // Увеличивай версию при изменении схемы
-    exportSchema = true // Рекомендуется включить для Room Migrations (нужно настроить путь в build.gradle)
+    version = 2,
+    exportSchema = true
 )
 @TypeConverters(Converters::class) // Регистрируем конвертер
 abstract class AppDatabase : RoomDatabase() {
@@ -33,8 +33,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     DATABASE_NAME
                 )
-                    // .addMigrations(...) // Добавить миграции здесь, если нужно
-                    // .fallbackToDestructiveMigration() // Только для разработки! Удаляет данные при изменении схемы.
+                    .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
                 instance

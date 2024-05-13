@@ -1,23 +1,25 @@
 [versions]
 accompanistPermissions = "0.34.0"
 agp = "8.4.0"
-kotlin = "1.9.22"
-ksp = "1.9.22-1.0.17"
+kotlin = "2.0.10"
+ksp = "2.0.10-1.0.24"
 hilt = "2.48.1"
-composeCompiler = "1.5.10"
 
 coreKtx = "1.12.0"
 lifecycle = "2.7.0"
 activityCompose = "1.8.2"
-composeBom = "2024.02.02"
+composeBom      = "2024.06.00"
+composeCompiler = "2.0.0"
 navigationCompose = "2.7.7"
 hiltNavigationCompose = "1.1.0"
+richeditorCompose = "1.0.0-rc06"
 room = "2.6.1"
 coroutines = "1.7.3"
+work = "2.9.0"
+hiltWork = "1.1.0"
 
 junit = "4.13.2"
 junitVersion = "1.1.5"
-espressoCore = "3.5.1"
 
 [libraries]
 accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanistPermissions" }
@@ -43,22 +45,25 @@ androidx-room-runtime = { group = "androidx.room", name = "room-runtime", versio
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 
+androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
+
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
 hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+hilt-work = { group = "androidx.hilt", name = "hilt-work", version.ref = "hiltWork" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
-androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core"}
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 
 androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
-
-
+richeditor-compose = { module = "com.mohamedrejeb.richeditor:richeditor-compose-android", version.ref = "richeditorCompose" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

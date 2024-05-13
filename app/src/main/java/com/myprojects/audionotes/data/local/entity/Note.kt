@@ -9,5 +9,6 @@ data class Note(
     var title: String = "New Note",
     var content: String = "",
     val createdAt: Long = System.currentTimeMillis(),
-    var updatedAt: Long = System.currentTimeMillis()
+    var updatedAt: Long = System.currentTimeMillis(),
+    var reminderAt: Long? = null 
 )

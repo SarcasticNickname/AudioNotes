@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
 }
@@ -86,6 +87,9 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
+    // WorkManager
+    implementation(libs.androidx.work.runtime.ktx)
+
     // Testing
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
@@ -98,6 +102,8 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
 
     implementation(libs.accompanist.permissions)
+
+    implementation(libs.richeditor.compose)
 
 }
 
