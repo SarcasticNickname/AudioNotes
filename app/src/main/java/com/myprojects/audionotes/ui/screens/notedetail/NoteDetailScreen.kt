@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -59,8 +60,6 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
-// --- ViewContentPart, parseHtmlContentForViewMode, formatDuration, convertForHtmlCompat ---
-// (Эти вспомогательные классы и функции остаются без изменений, как в твоем коде)
 sealed interface ViewContentPart
 data class TextPart(val htmlSegment: String) : ViewContentPart
 data class AudioPart(val block: NoteBlock) : ViewContentPart
@@ -176,6 +175,12 @@ fun NoteDetailScreen(
     // Состояние для отображения диалога информации о напоминании в режиме просмотра
     var showViewModeReminderInfoDialog by remember { mutableStateOf(false) }
 
+    // Состояния для диалога переименования аудио-блока
+    var showRenameAudioDialog by remember { mutableStateOf(false) }
+    var audioBlockToRename by remember { mutableStateOf<NoteBlock?>(null) }
+    var tempAudioName by remember { mutableStateOf("") }
+
+
     LaunchedEffect(uiState.notificationPermissionStatus) {
         if (uiState.notificationPermissionStatus == NotificationPermissionStatus.DENIED) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -217,6 +222,61 @@ fun NoteDetailScreen(
                 TextButton(onClick = { showViewModeReminderInfoDialog = false }) {
                     Text("OK")
                 }
+            },
+            // МОЙ КОММЕНТАРИЙ: Добавляем dismissButton для отмены напоминания
+            dismissButton = {
+                if (isReminderSetAndFuture) { // Показываем кнопку отмены только если напоминание активно
+                    TextButton(
+                        onClick = {
+                            viewModel.clearReminderAndViewMode()
+                            showViewModeReminderInfoDialog = false // Закрываем диалог
+                        }
+                    ) {
+                        Text("Отменить напоминание", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        )
+    }
+
+    // Диалог для переименования аудио-блока
+    if (showRenameAudioDialog && audioBlockToRename != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showRenameAudioDialog = false
+                audioBlockToRename = null
+                tempAudioName = ""
+            },
+            title = { Text("Rename Audio Clip") },
+            text = {
+                OutlinedTextField(
+                    value = tempAudioName,
+                    onValueChange = { tempAudioName = it },
+                    label = { Text("Audio Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        audioBlockToRename?.let { block ->
+                            viewModel.updateAudioBlockDisplayName(block.id, tempAudioName)
+                        }
+                        showRenameAudioDialog = false
+                        audioBlockToRename = null
+                        tempAudioName = ""
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showRenameAudioDialog = false
+                        audioBlockToRename = null
+                        tempAudioName = ""
+                    }
+                ) { Text("Cancel") }
             }
         )
     }
@@ -337,13 +397,11 @@ fun NoteDetailScreen(
                         IconButton(
                             onClick = {
                                 if (uiState.isEditing) {
-                                    viewModel.onReminderIconClick() // Открывает ReminderDateTimePickerDialog через ViewModel
+                                    viewModel.onReminderIconClick()
                                 } else {
-                                    showViewModeReminderInfoDialog =
-                                        true // Открывает AlertDialog информации
+                                    showViewModeReminderInfoDialog = true
                                 }
                             }
-                            // enabled не нужен, т.к. клик обрабатывается по-разному
                         ) {
                             val reminderSetAndFuture =
                                 uiState.reminderAt != null && (uiState.reminderAt
@@ -352,7 +410,7 @@ fun NoteDetailScreen(
                                 if (reminderSetAndFuture) Icons.Filled.NotificationsActive else Icons.Outlined.Notifications,
                                 "Set Reminder",
                                 tint = if (reminderSetAndFuture) MaterialTheme.colorScheme.primary
-                                else LocalContentColor.current // Обычный цвет, если не установлено или в прошлом
+                                else LocalContentColor.current
                             )
                         }
 
@@ -602,20 +660,25 @@ fun NoteDetailScreen(
                             items = uiState.displayedAudioBlocks,
                             key = { block -> "edit-${block.id}" }) { block ->
                             AudioPlayerItem(
-                                block,
-                                uiState.currentPlayingAudioBlockId == block.id && uiState.audioPlayerState == PlayerState.PLAYING,
-                                uiState.currentPlayingAudioBlockId == block.id && uiState.audioPlayerState == PlayerState.PAUSED,
-                                if (uiState.currentPlayingAudioBlockId == block.id) uiState.currentAudioPositionMs else 0,
-                                (block.audioDurationMs ?: 0L).toInt(),
-                                { viewModel.playAudio(block.id) },
-                                { viewModel.deleteAudioBlockFromPlayer(block.id) },
-                                { progress ->
+                                audioBlock = block,
+                                isPlaying = uiState.currentPlayingAudioBlockId == block.id && uiState.audioPlayerState == PlayerState.PLAYING,
+                                isPaused = uiState.currentPlayingAudioBlockId == block.id && uiState.audioPlayerState == PlayerState.PAUSED,
+                                currentPositionMs = if (uiState.currentPlayingAudioBlockId == block.id) uiState.currentAudioPositionMs else 0,
+                                totalDurationMs = (block.audioDurationMs ?: 0L).toInt(),
+                                onPlayPauseClick = { viewModel.playAudio(block.id) },
+                                onDeleteClick = { viewModel.deleteAudioBlockFromPlayer(block.id) },
+                                onSeek = { progress ->
                                     viewModel.onSeekAudio(
                                         block.id,
                                         (progress * (block.audioDurationMs ?: 0L)).roundToInt()
                                     )
                                 },
-                                true
+                                showDeleteButton = true,
+                                onRenameRequest = { // Передаем callback для инициации переименования
+                                    audioBlockToRename = block
+                                    tempAudioName = block.audioDisplayName ?: ""
+                                    showRenameAudioDialog = true
+                                }
                             )
                         }
                     }
@@ -642,7 +705,9 @@ fun NoteDetailScreen(
                                         ); movementMethod =
                                             LinkMovementMethod.getInstance(); isClickable =
                                             false; isFocusable =
-                                            false; setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                            false; setTextIsSelectable(true); setBackgroundColor(
+                                            android.graphics.Color.TRANSPARENT
+                                        )
                                         }
                                     },
                                     update = { tv ->
@@ -657,21 +722,22 @@ fun NoteDetailScreen(
                                 )
 
                                 is AudioPart -> AudioPlayerItem(
-                                    part.block,
-                                    uiState.currentPlayingAudioBlockId == part.block.id && uiState.audioPlayerState == PlayerState.PLAYING,
-                                    uiState.currentPlayingAudioBlockId == part.block.id && uiState.audioPlayerState == PlayerState.PAUSED,
-                                    if (uiState.currentPlayingAudioBlockId == part.block.id) uiState.currentAudioPositionMs else 0,
-                                    (part.block.audioDurationMs ?: 0L).toInt(),
-                                    { viewModel.playAudio(part.block.id) },
-                                    {},
-                                    { progress ->
+                                    audioBlock = part.block,
+                                    isPlaying = uiState.currentPlayingAudioBlockId == part.block.id && uiState.audioPlayerState == PlayerState.PLAYING,
+                                    isPaused = uiState.currentPlayingAudioBlockId == part.block.id && uiState.audioPlayerState == PlayerState.PAUSED,
+                                    currentPositionMs = if (uiState.currentPlayingAudioBlockId == part.block.id) uiState.currentAudioPositionMs else 0,
+                                    totalDurationMs = (part.block.audioDurationMs ?: 0L).toInt(),
+                                    onPlayPauseClick = { viewModel.playAudio(part.block.id) },
+                                    onDeleteClick = {}, // В режиме просмотра нет удаления из этого UI
+                                    onSeek = { progress ->
                                         viewModel.onSeekAudio(
                                             part.block.id,
                                             (progress * (part.block.audioDurationMs
                                                 ?: 0L)).roundToInt()
                                         )
                                     },
-                                    false
+                                    showDeleteButton = false,
+                                    onRenameRequest = null // В режиме просмотра нет переименования
                                 )
                             }
                         }
@@ -703,8 +769,6 @@ fun NoteDetailScreen(
     }
 }
 
-// --- ReminderDateTimePickerDialog, VerticalDivider, AudioPlayerItem ---
-// (Эти Composable функции остаются без изменений, как в твоем коде)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReminderDateTimePickerDialog(
@@ -837,7 +901,8 @@ fun AudioPlayerItem(
     onPlayPauseClick: () -> Unit,
     onDeleteClick: () -> Unit,
     onSeek: (Float) -> Unit,
-    showDeleteButton: Boolean
+    showDeleteButton: Boolean,
+    onRenameRequest: (() -> Unit)? = null // Callback для инициации переименования
 ) {
     Card(
         modifier = Modifier
@@ -851,11 +916,14 @@ fun AudioPlayerItem(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(
+                Row( // Этот Row теперь будет кликабельным для переименования
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .weight(1f)
                         .padding(end = 8.dp)
+                        .then(
+                            if (onRenameRequest != null) Modifier.clickable { onRenameRequest() } else Modifier
+                        )
                 ) {
                     Icon(
                         Icons.Filled.GraphicEq,
@@ -863,7 +931,9 @@ fun AudioPlayerItem(
                         tint = MaterialTheme.colorScheme.primary
                     ); Spacer(Modifier.width(12.dp)); Column {
                     Text(
-                        "Audio Clip (ID: ${audioBlock.id % 1000})",
+                        // Используем audioDisplayName, если есть, иначе дефолтное имя
+                        text = audioBlock.audioDisplayName?.takeIf { it.isNotBlank() }
+                            ?: "Audio Clip (ID: ${audioBlock.id % 1000})",
                         style = MaterialTheme.typography.bodyMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis

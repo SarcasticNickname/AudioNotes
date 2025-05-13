@@ -22,10 +22,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -38,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue // Добавлен импорт для var expanded by remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -47,6 +52,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import androidx.navigation.compose.rememberNavController
+import com.myprojects.audionotes.data.preferences.SpeechLanguage // Импорт SpeechLanguage
 import com.myprojects.audionotes.ui.theme.AudioNotesTheme
 import com.myprojects.audionotes.ui.viewmodel.SettingsUiState
 import com.myprojects.audionotes.ui.viewmodel.SettingsViewModel
@@ -76,10 +82,9 @@ fun SettingsScreen(
             snackbarHostState.showSnackbar(
                 message = errorMessage,
                 duration = SnackbarDuration.Long,
-                actionLabel = "Dismiss" // Добавим кнопку для закрытия Snackbar
+                actionLabel = "Dismiss"
             ).also {
-                // Сбрасываем ошибку только если Snackbar был закрыт (или по таймауту)
-                // viewModel.clearError() // Лучше дать пользователю явно закрыть или сама исчезнет
+                // viewModel.clearError() // Оставим возможность закрыть через кнопку или по таймауту
             }
         }
     }
@@ -107,10 +112,8 @@ fun SettingsScreen(
                 .padding(paddingValues)
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp) // Немного уменьшил общий отступ
         ) {
-            // Показываем общий индикатор загрузки, если isLoading=true И (нет пользователя ИЛИ идет процесс входа)
-            // Это предотвращает показ индикатора, когда данные просто обновляются в фоне.
             if (uiState.isLoading && (uiState.currentUser == null || uiState.isSigningIn)) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
@@ -123,14 +126,22 @@ fun SettingsScreen(
                     onSignOutClick = { viewModel.signOut() }
                 )
 
-                Divider()
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
 
                 BackupSection(
                     isUserLoggedIn = uiState.currentUser != null,
-                    isActionInProgress = uiState.isLoading || uiState.isSigningIn, // Блокируем кнопки во время любого процесса
+                    isActionInProgress = uiState.isLoading || uiState.isSigningIn,
                     onBackupClick = { viewModel.backupNotesToFirestore() },
                     onRestoreClick = { viewModel.restoreNotesFromFirestore() },
-                    lastBackupTimestamp = uiState.lastBackupTimestamp // Передаем Long?
+                    lastBackupTimestamp = uiState.lastBackupTimestamp
+                )
+
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+                // МОЯ СЕКЦИЯ: Добавлена секция для выбора языка распознавания
+                SpeechLanguageSection(
+                    selectedLanguage = uiState.selectedSpeechLanguage,
+                    onLanguageSelected = { viewModel.updateSpeechLanguage(it) }
                 )
             }
         }
@@ -203,7 +214,7 @@ fun BackupSection(
     isActionInProgress: Boolean,
     onBackupClick: () -> Unit,
     onRestoreClick: () -> Unit,
-    lastBackupTimestamp: Long? // Принимаем Long?
+    lastBackupTimestamp: Long?
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
         Text("Cloud Backup & Restore", style = MaterialTheme.typography.titleLarge)
@@ -229,7 +240,7 @@ fun BackupSection(
                 Text("Restore Notes from Cloud")
             }
             Spacer(Modifier.height(16.dp))
-            val lastBackupText = remember(lastBackupTimestamp) { // Форматируем время здесь
+            val lastBackupText = remember(lastBackupTimestamp) {
                 if (lastBackupTimestamp == null) {
                     "Last backup: Never"
                 } else {
@@ -250,17 +261,67 @@ fun BackupSection(
     }
 }
 
+// МОЯ ФУНКЦИЯ: Новая Composable-функция для выбора языка
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SpeechLanguageSection(
+    selectedLanguage: SpeechLanguage,
+    onLanguageSelected: (SpeechLanguage) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val availableLanguages = SpeechLanguage.entries // Получаем все доступные языки из enum
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        Text("Speech Recognition Language", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(16.dp))
+
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth(0.8f) // Ограничиваем ширину для лучшего вида
+        ) {
+            OutlinedTextField(
+                value = selectedLanguage.displayName,
+                onValueChange = {}, // Текстовое поле только для чтения
+                readOnly = true,
+                label = { Text("Language") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                modifier = Modifier
+                    .menuAnchor() // Важно для привязки выпадающего меню к этому полю
+                    .fillMaxWidth()
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                availableLanguages.forEach { language ->
+                    DropdownMenuItem(
+                        text = { Text(language.displayName) },
+                        onClick = {
+                            onLanguageSelected(language)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Preview(showBackground = true, name = "Settings Screen - Not Logged In")
 @Composable
 fun SettingsScreenPreviewNotLoggedIn() {
     AudioNotesTheme {
         val navController = rememberNavController()
+        // МОЙ КОММЕНТАРИЙ: Добавил selectedSpeechLanguage для превью
         val fakeUiState = SettingsUiState(
             currentUser = null,
             isLoading = false,
             isSigningIn = false,
-            lastBackupTimestamp = null
+            lastBackupTimestamp = null,
+            selectedSpeechLanguage = SpeechLanguage.RUSSIAN // Пример для превью
         )
         val rememberedUiState by remember { mutableStateOf(fakeUiState) }
 
@@ -284,20 +345,26 @@ fun SettingsScreenPreviewNotLoggedIn() {
                     .padding(16.dp)
                     .fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(24.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 AccountSection(
                     userInfo = rememberedUiState.currentUser,
                     isSigningIn = rememberedUiState.isSigningIn,
                     onSignInClick = { },
                     onSignOutClick = {})
-                Divider()
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
                 BackupSection(
                     isUserLoggedIn = rememberedUiState.currentUser != null,
                     isActionInProgress = rememberedUiState.isLoading || rememberedUiState.isSigningIn,
                     onBackupClick = { },
                     onRestoreClick = { },
                     lastBackupTimestamp = rememberedUiState.lastBackupTimestamp
+                )
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+                // МОЙ КОММЕНТАРИЙ: Добавил вызов новой секции в превью
+                SpeechLanguageSection(
+                    selectedLanguage = rememberedUiState.selectedSpeechLanguage,
+                    onLanguageSelected = {}
                 )
             }
         }
@@ -310,11 +377,13 @@ fun SettingsScreenPreviewNotLoggedIn() {
 fun SettingsScreenPreviewLoggedIn() {
     AudioNotesTheme {
         val navController = rememberNavController()
+        // МОЙ КОММЕНТАРИЙ: Добавил selectedSpeechLanguage для превью
         val fakeUiState = SettingsUiState(
             currentUser = UserInfo("123", "Test User", "test@example.com"),
             isLoading = false,
             isSigningIn = false,
-            lastBackupTimestamp = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(5)
+            lastBackupTimestamp = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(5),
+            selectedSpeechLanguage = SpeechLanguage.ENGLISH // Пример для превью
         )
         val rememberedUiState by remember { mutableStateOf(fakeUiState) }
 
@@ -338,20 +407,26 @@ fun SettingsScreenPreviewLoggedIn() {
                     .padding(16.dp)
                     .fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(24.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 AccountSection(
                     userInfo = rememberedUiState.currentUser,
                     isSigningIn = rememberedUiState.isSigningIn,
                     onSignInClick = { },
                     onSignOutClick = {})
-                Divider()
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
                 BackupSection(
                     isUserLoggedIn = rememberedUiState.currentUser != null,
                     isActionInProgress = rememberedUiState.isLoading || rememberedUiState.isSigningIn,
                     onBackupClick = { },
                     onRestoreClick = { },
                     lastBackupTimestamp = rememberedUiState.lastBackupTimestamp
+                )
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+                // МОЙ КОММЕНТАРИЙ: Добавил вызов новой секции в превью
+                SpeechLanguageSection(
+                    selectedLanguage = rememberedUiState.selectedSpeechLanguage,
+                    onLanguageSelected = {}
                 )
             }
         }

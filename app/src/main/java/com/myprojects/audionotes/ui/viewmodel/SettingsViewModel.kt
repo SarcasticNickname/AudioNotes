@@ -1,5 +1,6 @@
 package com.myprojects.audionotes.ui.viewmodel
 
+// import com.google.firebase.firestore.ktx.toObject // toObject уже не нужен, если мапим вручную
 import android.app.Activity
 import android.content.Context
 import android.util.Log
@@ -17,49 +18,65 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.firestore.ktx.toObject
-import com.myprojects.audionotes.R // Для R.string.default_web_client_id
+import com.myprojects.audionotes.R
 import com.myprojects.audionotes.data.local.entity.Note
 import com.myprojects.audionotes.data.local.entity.NoteCategory
+import com.myprojects.audionotes.data.preferences.SpeechLanguage
+import com.myprojects.audionotes.data.preferences.UserPreferencesRepository
 import com.myprojects.audionotes.data.repository.NoteRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-// Data class для информации о пользователе, отображаемой в UI
 data class UserInfo(
     val uid: String,
     val displayName: String?,
     val email: String?
 )
 
-// Состояние UI для экрана настроек
 data class SettingsUiState(
     val currentUser: UserInfo? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
     val isSigningIn: Boolean = false,
-    val lastBackupTimestamp: Long? = null // Время последнего успешного бэкапа
+    val lastBackupTimestamp: Long? = null,
+    // МОЙ КОММЕНТАРИЙ: Добавлено поле для выбранного языка
+    val selectedSpeechLanguage: SpeechLanguage = SpeechLanguage.defaultLanguage
 )
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val firebaseAuth: FirebaseAuth,
-    private val noteRepository: NoteRepository, // Репозиторий для доступа к локальным заметкам
-    private val firestore: FirebaseFirestore   // Firestore для облачного хранения
+    private val noteRepository: NoteRepository,
+    private val firestore: FirebaseFirestore,
+    // МОЙ КОММЕНТАРИЙ: Внедрен UserPreferencesRepository
+    private val userPreferencesRepository: UserPreferencesRepository
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(SettingsUiState())
-    val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+    // МОЙ КОММЕНТАРИЙ: _uiState теперь _internalUiState для комбинирования с потоком языка
+    private val _internalUiState = MutableStateFlow(SettingsUiState())
+    val uiState: StateFlow<SettingsUiState> = combine(
+        _internalUiState,
+        userPreferencesRepository.speechLanguageFlow
+    ) { internalState, speechLanguage ->
+        internalState.copy(selectedSpeechLanguage = speechLanguage)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = SettingsUiState() // Начальное значение, которое будет немедленно обновлено
+    )
+
 
     private val oneTapClient: SignInClient by lazy { Identity.getSignInClient(appContext) }
     private val signInRequest: BeginSignInRequest by lazy {
@@ -68,10 +85,10 @@ class SettingsViewModel @Inject constructor(
                 BeginSignInRequest.GoogleIdTokenRequestOptions.builder()
                     .setSupported(true)
                     .setServerClientId(appContext.getString(R.string.default_web_client_id))
-                    .setFilterByAuthorizedAccounts(false)
+                    .setFilterByAuthorizedAccounts(false) // Позволяет выбирать любой аккаунт Google
                     .build()
             )
-            .setAutoSelectEnabled(false)
+            .setAutoSelectEnabled(false) // Не выбирать автоматически, дать пользователю выбор
             .build()
     }
 
@@ -83,22 +100,25 @@ class SettingsViewModel @Inject constructor(
     }
 
     init {
-        checkCurrentUser() // Проверяем, вошел ли пользователь при запуске ViewModel
+        checkCurrentUser()
+        // Загрузка языка теперь происходит через combine в объявлении uiState
     }
 
     private fun checkCurrentUser() {
         val firebaseUser = firebaseAuth.currentUser
-        _uiState.update {
+        // МОЙ КОММЕНТАРИЙ: isLoading и currentUser обновляются в _internalUiState
+        _internalUiState.update {
             it.copy(currentUser = firebaseUser?.toUserInfo(), isLoading = false)
         }
         if (firebaseUser != null) {
-            loadLastBackupTimestamp(firebaseUser.uid) // Загружаем время последнего бэкапа, если пользователь вошел
+            loadLastBackupTimestamp(firebaseUser.uid)
         }
         Log.d(TAG, "Current Firebase user: ${firebaseUser?.uid}")
     }
 
     fun initiateSignIn(launcher: ManagedActivityResultLauncher<IntentSenderRequest, ActivityResult>) {
-        _uiState.update { it.copy(isSigningIn = true, error = null, isLoading = true) }
+        // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
+        _internalUiState.update { it.copy(isSigningIn = true, error = null, isLoading = true) }
         viewModelScope.launch {
             try {
                 val result = oneTapClient.beginSignIn(signInRequest).await()
@@ -107,7 +127,7 @@ class SettingsViewModel @Inject constructor(
                 launcher.launch(intentSenderRequest)
             } catch (e: Exception) {
                 Log.e(TAG, "Google Sign-In begin failed", e)
-                _uiState.update {
+                _internalUiState.update { // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
                     it.copy(
                         isSigningIn = false,
                         isLoading = false,
@@ -127,7 +147,7 @@ class SettingsViewModel @Inject constructor(
                     signInToFirebaseWithGoogleToken(googleIdToken)
                 } else {
                     Log.e(TAG, "Google ID Token is null after successful One Tap.")
-                    _uiState.update {
+                    _internalUiState.update { // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
                         it.copy(
                             isSigningIn = false,
                             isLoading = false,
@@ -137,7 +157,7 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (e: ApiException) {
                 Log.e(TAG, "Google Sign-In failed from Intent: ${e.statusCode}", e)
-                _uiState.update {
+                _internalUiState.update { // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
                     it.copy(
                         isSigningIn = false,
                         isLoading = false,
@@ -147,7 +167,7 @@ class SettingsViewModel @Inject constructor(
             }
         } else {
             Log.w(TAG, "Google Sign-in result was not OK. ResultCode: ${activityResult.resultCode}")
-            _uiState.update {
+            _internalUiState.update { // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
                 it.copy(
                     isSigningIn = false,
                     isLoading = false,
@@ -163,7 +183,7 @@ class SettingsViewModel @Inject constructor(
                 val credential = GoogleAuthProvider.getCredential(idToken, null)
                 firebaseAuth.signInWithCredential(credential).await()
                 val firebaseUser = firebaseAuth.currentUser
-                _uiState.update {
+                _internalUiState.update { // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
                     it.copy(
                         currentUser = firebaseUser?.toUserInfo(),
                         isSigningIn = false,
@@ -171,12 +191,12 @@ class SettingsViewModel @Inject constructor(
                         error = null
                     )
                 }
-                firebaseUser?.uid?.let { loadLastBackupTimestamp(it) } // Загружаем инфо о бэкапе
+                firebaseUser?.uid?.let { loadLastBackupTimestamp(it) }
                 Log.i(TAG, "Successfully signed in with Firebase: ${firebaseUser?.displayName}")
             } catch (e: Exception) {
                 Log.e(TAG, "Firebase Sign-In with Google Token failed", e)
-                firebaseAuth.signOut() // Важно выйти, если что-то пошло не так с Firebase после получения токена Google
-                _uiState.update {
+                firebaseAuth.signOut()
+                _internalUiState.update { // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
                     it.copy(
                         currentUser = null,
                         isSigningIn = false,
@@ -190,21 +210,32 @@ class SettingsViewModel @Inject constructor(
 
     fun signOut() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isSigningIn = true, isLoading = true) }
+            _internalUiState.update {
+                it.copy(
+                    isSigningIn = true,
+                    isLoading = true
+                )
+            } // МОЙ КОММЕНТАРИЙ
             try {
                 oneTapClient.signOut().await()
                 firebaseAuth.signOut()
-                // Сбрасываем все состояние, включая время последнего бэкапа
-                _uiState.update { SettingsUiState(isLoading = false, lastBackupTimestamp = null) }
+                // МОЙ КОММЕНТАРИЙ: Сбрасываем _internalUiState, selectedSpeechLanguage придет из combine
+                _internalUiState.update {
+                    SettingsUiState(
+                        isLoading = false,
+                        lastBackupTimestamp = null
+                    )
+                }
                 Log.i(TAG, "User signed out successfully.")
             } catch (e: Exception) {
                 Log.e(TAG, "Sign out failed", e)
-                // Даже если OneTap signOut не удался, Firebase signOut должен был сработать
-                _uiState.update {
-                    SettingsUiState(
+                // МОЙ КОММЕНТАРИЙ: Обновляем _internalUiState
+                _internalUiState.update {
+                    SettingsUiState( // Пересоздаем с учетом возможного currentUser
                         currentUser = firebaseAuth.currentUser?.toUserInfo(),
                         isLoading = false,
                         error = "Sign out failed: ${e.localizedMessage}"
+                        // selectedSpeechLanguage придет из combine
                     )
                 }
             }
@@ -214,7 +245,7 @@ class SettingsViewModel @Inject constructor(
     fun backupNotesToFirestore() {
         val userId = firebaseAuth.currentUser?.uid
         if (userId == null) {
-            _uiState.update {
+            _internalUiState.update { // МОЙ КОММЕНТАРИЙ
                 it.copy(
                     error = "User not signed in. Cannot backup.",
                     isLoading = false
@@ -222,7 +253,7 @@ class SettingsViewModel @Inject constructor(
             }
             return
         }
-        _uiState.update { it.copy(isLoading = true, error = null) }
+        _internalUiState.update { it.copy(isLoading = true, error = null) } // МОЙ КОММЕНТАРИЙ
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -230,9 +261,6 @@ class SettingsViewModel @Inject constructor(
                 val userNotesCollection = firestore.collection(USERS_COLLECTION).document(userId)
                     .collection(NOTES_COLLECTION)
 
-                // Очищаем старые заметки пользователя в облаке перед записью новых
-                // Это стратегия "полного бэкапа", когда локальные данные - источник истины.
-                // Если нужна синхронизация, логика будет сложнее.
                 val oldNotesSnapshot = userNotesCollection.get().await()
                 if (!oldNotesSnapshot.isEmpty) {
                     val deleteBatch = firestore.batch()
@@ -246,9 +274,9 @@ class SettingsViewModel @Inject constructor(
                     updateLastBackupTimestampInFirestore(
                         userId,
                         System.currentTimeMillis()
-                    ) // Обновляем время, даже если бэкап пуст
+                    )
                     withContext(Dispatchers.Main) {
-                        _uiState.update {
+                        _internalUiState.update { // МОЙ КОММЕНТАРИЙ
                             it.copy(
                                 isLoading = false,
                                 error = null,
@@ -262,7 +290,6 @@ class SettingsViewModel @Inject constructor(
                 val batch = firestore.batch()
                 localNotes.forEach { note ->
                     val noteDocumentRef = userNotesCollection.document(note.id.toString())
-                    // Конвертируем Note в Map, как мы делали раньше
                     val noteData = mapOf(
                         "title" to note.title, "content" to note.content,
                         "createdAt" to note.createdAt, "updatedAt" to note.updatedAt,
@@ -275,8 +302,8 @@ class SettingsViewModel @Inject constructor(
 
                 val backupTime = System.currentTimeMillis()
                 updateLastBackupTimestampInFirestore(userId, backupTime)
-                withContext(Dispatchers.Main) { // Обновляем UI в главном потоке
-                    _uiState.update {
+                withContext(Dispatchers.Main) {
+                    _internalUiState.update { // МОЙ КОММЕНТАРИЙ
                         it.copy(
                             isLoading = false,
                             error = null,
@@ -292,7 +319,7 @@ class SettingsViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Error backing up notes to Firestore", e)
                 withContext(Dispatchers.Main) {
-                    _uiState.update {
+                    _internalUiState.update { // МОЙ КОММЕНТАРИЙ
                         it.copy(
                             isLoading = false,
                             error = "Backup failed: ${e.localizedMessage}"
@@ -306,7 +333,7 @@ class SettingsViewModel @Inject constructor(
     fun restoreNotesFromFirestore() {
         val userId = firebaseAuth.currentUser?.uid
         if (userId == null) {
-            _uiState.update {
+            _internalUiState.update { // МОЙ КОММЕНТАРИЙ
                 it.copy(
                     error = "User not signed in. Cannot restore.",
                     isLoading = false
@@ -314,7 +341,7 @@ class SettingsViewModel @Inject constructor(
             }
             return
         }
-        _uiState.update { it.copy(isLoading = true, error = null) }
+        _internalUiState.update { it.copy(isLoading = true, error = null) } // МОЙ КОММЕНТАРИЙ
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -324,27 +351,19 @@ class SettingsViewModel @Inject constructor(
 
                 if (snapshot.isEmpty) {
                     withContext(Dispatchers.Main) {
-                        _uiState.update {
+                        _internalUiState.update { // МОЙ КОММЕНТАРИЙ
                             it.copy(
                                 isLoading = false,
                                 error = "No notes found in cloud backup."
                             )
                         }
                     }
-                    // Очищаем локальные данные, если бэкап пуст и это "полное восстановление"
-                    // noteRepository.deleteAllNotes() // Нужен такой метод в DAO/Repo
-                    // Пока что не удаляем локальные, если бэкап пуст
                     return@launch
                 }
 
                 val notesFromFirestore = snapshot.documents.mapNotNull { doc ->
-                    // Firestore может возвращать Long для чисел, Room ожидает Long.
-                    // Поле id в Note - val, поэтому при восстановлении оно будет установлено.
-                    // Если localId отличается от Firestore doc.id, нужно решить, какой использовать.
-                    // Здесь предполагаем, что doc.id и есть наш localId (как мы сохраняли).
                     Note(
-                        id = doc.id.toLongOrNull() ?: doc.getLong("localId")
-                        ?: 0L, // Используем Firestore ID или сохраненный localId
+                        id = doc.id.toLongOrNull() ?: doc.getLong("localId") ?: 0L,
                         title = doc.getString("title") ?: "",
                         content = doc.getString("content") ?: "",
                         createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
@@ -354,25 +373,25 @@ class SettingsViewModel @Inject constructor(
                         isArchived = doc.getBoolean("isArchived") ?: false
                     )
                 }
-                // Перед восстановлением, удаляем все существующие локальные заметки,
-                // чтобы избежать дубликатов и обеспечить "чистое" восстановление.
-                // Это потребует метода `deleteAllNotes()` в DAO/Repository.
-                // Пока что используем `replaceAllNotesFromBackup` который делает insertOrReplace
                 noteRepository.replaceAllNotesFromBackup(notesFromFirestore)
 
                 withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy(isLoading = false, error = null) }
+                    _internalUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = null
+                        )
+                    } // МОЙ КОММЕНТАРИЙ
                 }
                 Log.i(
                     TAG,
                     "${notesFromFirestore.size} notes restored successfully from Firestore for user $userId."
                 )
-                // Обновление списков на других экранах произойдет автоматически через Room Flows.
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error restoring notes from Firestore", e)
                 withContext(Dispatchers.Main) {
-                    _uiState.update {
+                    _internalUiState.update { // МОЙ КОММЕНТАРИЙ
                         it.copy(
                             isLoading = false,
                             error = "Restore failed: ${e.localizedMessage}"
@@ -383,12 +402,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-
     private suspend fun updateLastBackupTimestampInFirestore(userId: String, timestamp: Long) {
-        // Этот метод вызывается из IO потока (backupNotesToFirestore)
         try {
             val userDocRef = firestore.collection(USERS_COLLECTION).document(userId)
-            // Используем SetOptions.merge() чтобы обновить только это поле, не затирая другие данные пользователя, если они есть
             userDocRef.set(mapOf(LAST_BACKUP_FIELD to timestamp), SetOptions.merge()).await()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update last backup timestamp in Firestore", e)
@@ -401,26 +417,34 @@ class SettingsViewModel @Inject constructor(
                 val userDocRef = firestore.collection(USERS_COLLECTION).document(userId)
                 val snapshot = userDocRef.get().await()
                 val timestamp = snapshot.getLong(LAST_BACKUP_FIELD)
-                withContext(Dispatchers.Main) { // Обновляем UI в главном потоке
-                    _uiState.update { it.copy(lastBackupTimestamp = timestamp) }
+                withContext(Dispatchers.Main) {
+                    _internalUiState.update { it.copy(lastBackupTimestamp = timestamp) }
                 }
                 if (timestamp != null) Log.i(TAG, "Last backup timestamp loaded: $timestamp")
                 else Log.i(TAG, "No last backup timestamp found for user $userId")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to load last backup timestamp", e)
                 withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy(lastBackupTimestamp = null) } // Сбрасываем, если ошибка
+                    _internalUiState.update { it.copy(lastBackupTimestamp = null) }
                 }
             }
         }
     }
 
     fun clearError() {
-        _uiState.update { it.copy(error = null) }
+        _internalUiState.update { it.copy(error = null) }
+    }
+
+    // МОЯ ФУНКЦИЯ: Новый метод для обновления языка в DataStore
+    fun updateSpeechLanguage(language: SpeechLanguage) {
+        viewModelScope.launch {
+            userPreferencesRepository.updateSpeechLanguage(language)
+            // _internalUiState.update { it.copy(selectedSpeechLanguage = language) } // Это уже не нужно, т.к. uiState собирается через combine
+            Log.d(TAG, "Speech language updated to: ${language.displayName}")
+        }
     }
 }
 
-// Вспомогательная функция для конвертации FirebaseUser в наш UserInfo data class
 fun FirebaseUser.toUserInfo(): UserInfo {
     return UserInfo(
         uid = this.uid,

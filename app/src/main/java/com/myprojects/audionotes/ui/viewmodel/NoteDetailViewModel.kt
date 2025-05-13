@@ -27,6 +27,7 @@ import com.myprojects.audionotes.data.local.entity.BlockType
 import com.myprojects.audionotes.data.local.entity.Note
 import com.myprojects.audionotes.data.local.entity.NoteBlock
 import com.myprojects.audionotes.data.local.entity.NoteCategory
+import com.myprojects.audionotes.data.preferences.UserPreferencesRepository
 import com.myprojects.audionotes.data.repository.NoteRepository
 import com.myprojects.audionotes.ui.screens.notedetail.NoteDetailUiState
 import com.myprojects.audionotes.ui.screens.notedetail.NotificationPermissionStatus
@@ -48,6 +49,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.jsoup.parser.Parser
@@ -63,7 +65,8 @@ class NoteDetailViewModel @Inject constructor(
     private val speechProcessor: ISpeechToTextProcessor,
     private val workManager: WorkManager,
     @ApplicationContext private val appContext: Context,
-    private val savedStateHandle: SavedStateHandle
+    private val savedStateHandle: SavedStateHandle,
+    private val userPreferencesRepository: UserPreferencesRepository
 ) : ViewModel() {
 
     private val currentNoteIdFromArgs: Long = savedStateHandle.get<Long>("noteId") ?: -1L
@@ -72,6 +75,7 @@ class NoteDetailViewModel @Inject constructor(
     private var initialNoteCreatedAt: Long? = null
     private var originalReminderAt: Long? = null
     private var originalCategoryName: String = NoteCategory.NONE.name // ИСХОДНАЯ КАТЕГОРИЯ
+
 
     val richTextState = RichTextState()
 
@@ -471,18 +475,21 @@ class NoteDetailViewModel @Inject constructor(
             _uiState.update { it.copy(isRecording = false) }
             if (filePath != null) {
                 val duration = getAudioFileDuration(filePath)
+                // Генерируем уникальное временное имя или предлагаем пользователю ввести
+                val defaultDisplayName = "Audio ${System.currentTimeMillis() % 10000}"
                 val newAudioBlock = NoteBlock(
                     id = System.currentTimeMillis(),
                     noteId = _uiState.value.noteId ?: 0L,
                     type = BlockType.AUDIO,
                     audioFilePath = filePath,
                     audioDurationMs = duration,
-                    orderIndex = _pendingAudioBlocks.size
+                    orderIndex = _pendingAudioBlocks.size,
+                    audioDisplayName = defaultDisplayName
                 )
                 _pendingAudioBlocks.add(newAudioBlock)
                 Log.d(
                     TAG,
-                    "stopRecordingAudio: Added new block to _pendingAudioBlocks: ID=${newAudioBlock.id}, path=${newAudioBlock.audioFilePath}"
+                    "stopRecordingAudio: Added new block: ID=${newAudioBlock.id}, Name='${newAudioBlock.audioDisplayName}', Path='${newAudioBlock.audioFilePath}'"
                 )
                 val placeholder = createAudioPlaceholder(newAudioBlock.id)
                 richTextState.replaceSelectedText(placeholder)
@@ -494,8 +501,29 @@ class NoteDetailViewModel @Inject constructor(
         }
     }
 
+    // Новая функция в NoteDetailViewModel.kt
+    fun updateAudioBlockDisplayName(blockId: Long, newName: String) {
+        val blockIndexInPending = _pendingAudioBlocks.indexOfFirst { it.id == blockId }
+        if (blockIndexInPending != -1) {
+            val updatedBlock =
+                _pendingAudioBlocks[blockIndexInPending].copy(audioDisplayName = newName.ifBlank { null })
+            _pendingAudioBlocks[blockIndexInPending] = updatedBlock
+            Log.d(TAG, "Updated display name for pending block ID $blockId to '$newName'")
+        }
+
+        // Также обновить в displayedAudioBlocks, если они источник для UI в данный момент
+        val currentDisplayedBlocks = _uiState.value.displayedAudioBlocks.toMutableList()
+        val blockIndexInDisplayed = currentDisplayedBlocks.indexOfFirst { it.id == blockId }
+        if (blockIndexInDisplayed != -1) {
+            val updatedBlockInDisplayed =
+                currentDisplayedBlocks[blockIndexInDisplayed].copy(audioDisplayName = newName.ifBlank { null })
+            currentDisplayedBlocks[blockIndexInDisplayed] = updatedBlockInDisplayed
+            _uiState.update { it.copy(displayedAudioBlocks = currentDisplayedBlocks) }
+            Log.d(TAG, "Updated display name for displayed block ID $blockId to '$newName'")
+        }
+    }
+
     fun handleSpeechToTextButtonPress() {
-        // Лог при каждом нажатии
         Log.d(
             TAG, "handleSpeechToTextButtonPress called: " +
                     "isSpeechToTextActive=${_uiState.value.isSpeechToTextActive}, " +
@@ -503,7 +531,6 @@ class NoteDetailViewModel @Inject constructor(
                     "permissionGranted=${_uiState.value.permissionGranted}"
         )
 
-        // 1) Если уже идёт распознавание — останавливаем
         if (_uiState.value.isSpeechToTextActive) {
             Log.d(TAG, "Stopping speech recognition")
             speechProcessor.stopListening()
@@ -511,20 +538,17 @@ class NoteDetailViewModel @Inject constructor(
             return
         }
 
-        // 2) Если идёт запись аудио — блокируем
         if (_uiState.value.isRecording) {
             Log.d(TAG, "Cannot start STT while audio recording is active")
             _uiState.update { it.copy(error = "Stop audio recording before using Speech-to-Text.") }
             return
         }
 
-        // 3) Проверяем разрешение на микрофон
         if (!ensureMicPermission()) {
             Log.d(TAG, "Microphone permission not granted; showing rationale")
             return
         }
 
-        // 4) Запускаем распознавание в корутине
         viewModelScope.launch {
             if (!speechProcessor.isRecognitionAvailable()) {
                 Log.d(TAG, "Speech recognition service unavailable")
@@ -532,13 +556,19 @@ class NoteDetailViewModel @Inject constructor(
                 return@launch
             }
 
-            val sttLanguage = "ru-RU"
-            Log.d(TAG, "Starting speech recognition with language: $sttLanguage")
+            // Получаем текущий выбранный язык из настроек
+            val selectedSpeechLanguage =
+                userPreferencesRepository.speechLanguageFlow.first() // first() для однократного получения
+            val sttLanguage = selectedSpeechLanguage.languageTag
+
+            Log.d(
+                TAG,
+                "Starting speech recognition with language: $sttLanguage (Selected: ${selectedSpeechLanguage.displayName})"
+            )
             speechProcessor.startListening(sttLanguage)
             _uiState.update { it.copy(error = null) }
         }
     }
-
 
     private fun getAudioFileDuration(filePath: String): Long {
         return try {
@@ -654,92 +684,165 @@ class NoteDetailViewModel @Inject constructor(
         }
     }
 
-    fun saveNote(switchToViewModeAfterSave: Boolean = false) {
+    fun saveNote(
+        switchToViewModeAfterSave: Boolean = false,
+        fromViewModeClearReminder: Boolean = false
+    ) { // МОЙ КОММЕНТАРИЙ: добавлен параметр
         viewModelScope.launch {
-            _uiState.update { it.copy(isSaving = true, error = null) }
+            // МОЙ КОММЕНТАРИЙ: Не устанавливаем isSaving = true, если это просто отмена напоминания из режима просмотра,
+            // чтобы не показывать лишний индикатор сохранения на весь экран
+            Log.d(TAG, "saveNote: Setting isSaving = true. Current isEditing: ${_uiState.value.isEditing}")
+            if (!fromViewModeClearReminder) {
+                _uiState.update { it.copy(isSaving = true, error = null) }
+            } else {
+                // Можно установить какой-то легкий индикатор, если очень хочется, но обычно это быстрая операция
+                Log.d(TAG, "saveNote: Saving note due to reminder clear from view mode. isSaving not changed yet.")
+            }
+
             try {
+                // МОЙ КОММЕНТАРИЙ: Если это отмена напоминания из режима просмотра,
+                // то заголовок и контент берем из original* значений,
+                // так как пользователь не был в режиме редактирования.
+                // Категория также берется из original.
                 val currentNoteId = _uiState.value.noteId?.takeIf { it != 0L } ?: 0L
-                val title = _uiState.value.noteTitle.ifBlank { "Untitled Note" }
-                val reminderTime = _uiState.value.reminderAt
+                val title =
+                    if (fromViewModeClearReminder) originalNoteTitle else _uiState.value.noteTitle.ifBlank { "Untitled Note" }
+                val reminderTime =
+                    _uiState.value.reminderAt // Это значение уже будет null, если вызвано из clearReminderAndViewMode
                 val selectedCategoryName =
-                    _uiState.value.selectedCategory.name // ПОЛУЧАЕМ ИМЯ ВЫБРАННОЙ КАТЕГОРИИ
+                    if (fromViewModeClearReminder) originalCategoryName else _uiState.value.selectedCategory.name
 
-                val htmlWithEntities = richTextState.toHtml()
-                Log.d(TAG, "saveNote: HTML from editor: '$htmlWithEntities'")
-                val htmlDecoded = Parser.unescapeEntities(htmlWithEntities, false)
-                Log.d(TAG, "saveNote: Decoded HTML: '$htmlDecoded'")
+                // МОЙ КОММЕНТАРИЙ: Контент и аудио-блоки также берем из original, если отмена из view mode.
+                // Однако, если в будущем в режиме просмотра можно будет менять аудио (что маловероятно), это нужно будет учесть.
+                // Пока предполагаем, что аудио не меняются в режиме просмотра.
+                val htmlContentToSave: String
+                val audioToSave: List<NoteBlock>
 
-                val rawText = richTextState.annotatedString.text
-                val idRegex = Regex(
-                    Regex.escape(AUDIO_PLACEHOLDER_PREFIX) +
-                            "\\s*(\\d+)\\s*" +
-                            Regex.escape(AUDIO_PLACEHOLDER_SUFFIX)
+                if (fromViewModeClearReminder) {
+                    htmlContentToSave = originalHtmlContent
+                    // ВАЖНО: нужно взять актуальные аудио-блоки, которые были загружены с заметкой
+                    // _pendingAudioBlocks может содержать изменения из предыдущего сеанса редактирования,
+                    // если пользователь не сохранил их и просто вышел из режима редактирования.
+                    // Лучше всего было бы иметь исходный список аудио-блоков, загруженных с заметкой.
+                    // Для простоты, пока будем использовать _pendingAudioBlocks, но это место для улучшения,
+                    // если нужна строгая консистентность при отмене напоминания из режима просмотра
+                    // без входа в редактирование.
+                    // ИДЕАЛЬНО: при loadNoteData сохранять originalAudioBlocks.
+                    // Сейчас _pendingAudioBlocks перезаписываются при loadNoteData.
+                    // Значит, если пользователь не входил в режим редактирования, они должны быть актуальны.
+                    audioToSave = _pendingAudioBlocks.mapIndexed { idx, block ->
+                        block.copy(
+                            noteId = 0L,
+                            orderIndex = idx
+                        )
+                    }
+
+                } else {
+                    val htmlWithEntities = richTextState.toHtml()
+                    htmlContentToSave = Parser.unescapeEntities(htmlWithEntities, false)
+
+                    val rawText = richTextState.annotatedString.text
+                    val idRegex = Regex(
+                        Regex.escape(AUDIO_PLACEHOLDER_PREFIX) +
+                                "\\s*(\\d+)\\s*" +
+                                Regex.escape(AUDIO_PLACEHOLDER_SUFFIX)
+                    )
+                    val tempIdsInText = idRegex
+                        .findAll(rawText)
+                        .mapNotNull { it.groupValues[1].toLongOrNull() }
+                        .toSet()
+
+                    audioToSave = _pendingAudioBlocks
+                        .filter { tempIdsInText.contains(it.id) }
+                        .mapIndexed { idx, block -> block.copy(noteId = 0L, orderIndex = idx) }
+                }
+
+                Log.d(TAG, "saveNote: HTML to save: '${htmlContentToSave.take(100)}'")
+                Log.d(
+                    TAG,
+                    "saveNote: Audio blocks to save: ${audioToSave.map { "ID:${it.id}, Name:${it.audioDisplayName}" }}"
                 )
-                val tempIds = idRegex
-                    .findAll(rawText)
-                    .mapNotNull { it.groupValues[1].toLongOrNull() }
-                    .toSet()
-                Log.d(TAG, "saveNote: temp audio IDs: $tempIds")
 
-                val audioToSave = _pendingAudioBlocks
-                    .filter { tempIds.contains(it.id) }
-                    .mapIndexed { idx, block -> block.copy(noteId = 0L, orderIndex = idx) }
 
                 val note = Note(
                     id = currentNoteId,
                     title = title,
-                    content = htmlDecoded,
+                    content = htmlContentToSave,
                     createdAt = if (currentNoteId == 0L) System.currentTimeMillis()
                     else (initialNoteCreatedAt ?: System.currentTimeMillis()),
-                    updatedAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis(), // Всегда обновляем updatedAt
                     reminderAt = reminderTime,
-                    category = selectedCategoryName // ДОБАВЛЯЕМ КАТЕГОРИЮ В СОХРАНЯЕМЫЙ ОБЪЕКТ
+                    category = selectedCategoryName
                 )
 
                 val savedNoteId = noteRepository.saveNote(note, audioToSave)
-                Log.i(TAG, "Note saved, id: $savedNoteId, category: $selectedCategoryName")
+                Log.i(
+                    TAG,
+                    "Note saved, id: $savedNoteId, category: $selectedCategoryName, reminder: $reminderTime"
+                )
 
                 if (savedNoteId > 0L) {
                     if (currentNoteId == 0L) initialNoteCreatedAt = note.createdAt
                     savedStateHandle["noteId"] = savedNoteId
 
                     scheduleOrCancelReminderWorker(savedNoteId, note.title, reminderTime)
-                    // ОБНОВЛЯЕМ ИСХОДНЫЕ ДАННЫЕ ПОСЛЕ УСПЕШНОГО СОХРАНЕНИЯ
+
+                    // Обновляем original* значения, чтобы hasUnsavedChanges() работал корректно
                     originalNoteTitle = title
-                    originalHtmlContent = htmlDecoded
+                    originalHtmlContent = htmlContentToSave
                     originalReminderAt = reminderTime
                     originalCategoryName = selectedCategoryName
+                    // МОЙ КОММЕНТАРИЙ: После сохранения, _pendingAudioBlocks должны отражать сохраненное состояние.
+                    // DAO.saveNoteAndAudioBlocks возвращает новые ID для блоков.
+                    // Чтобы _pendingAudioBlocks были актуальны, нужно их перезагрузить или обновить ID.
+                    // Проще всего перезагрузить, если switchToViewModeAfterSave или fromViewModeClearReminder.
+                    // Или, если сохранение было в режиме редактирования, оставить как есть, а при переходе в view mode произойдет loadNoteData.
 
+                    val newUiStateAfterSave = _uiState.value.copy(
+                        isSaving = if (fromViewModeClearReminder) false else _uiState.value.isSaving, // Не меняем isSaving, если это авто-сохранение
+                        noteId = savedNoteId,
+
+                        // isEditing не меняем здесь, если это авто-сохранение из-за отмены напоминания
+                        isEditing = if (fromViewModeClearReminder) false else !switchToViewModeAfterSave,
+                        reminderAt = reminderTime // Обновляем reminderAt в UI
+                    )
+
+                    _uiState.update { newUiStateAfterSave }
+
+                    if (fromViewModeClearReminder || switchToViewModeAfterSave) {
+                        Log.d(
+                            TAG,
+                            "saveNote successful, calling loadNoteData(). switchToViewMode: $switchToViewModeAfterSave, fromViewModeClear: $fromViewModeClearReminder"
+                        )
+                        loadNoteData()
+                        _uiState.update { it.copy(isSaving = false) }
+                    }
+
+
+                } else {
+                    Log.e(TAG, "saveNote: Failed to save, savedNoteId <= 0.")
                     _uiState.update {
                         it.copy(
                             isSaving = false,
-                            noteId = savedNoteId,
-                            isEditing = !switchToViewModeAfterSave
+                            error = "Failed to save note after reminder clear/save."
                         )
                     }
-                    // Если мы вышли из режима редактирования, данные уже должны быть консистентными
-                    // с UiState. loadNoteData() здесь может быть избыточен, если original* поля обновлены.
-                    // Если switchToViewModeAfterSave = true, то uiState.isEditing станет false,
-                    // и экран детализации будет отображать данные из UiState, которые должны быть актуальны.
-                    // Перезагрузка может быть полезна для полной синхронизации с БД, если DAO делает что-то еще.
-                    // Но для оптимизации, если switchToViewModeAfterSave, можно не вызывать loadNoteData(),
-                    // так как hasUnsavedChanges теперь будет корректно работать с обновленными original* полями.
-                    if (switchToViewModeAfterSave) {
-                        // Можно решить, нужна ли здесь перезагрузка. Если original* обновлены, UiState
-                        // уже отражает сохраненное состояние для режима просмотра.
-                        // loadNoteData() // Опционально, для полной уверенности.
-                    }
-
-                } else {
-                    _uiState.update { it.copy(isSaving = false, error = "Failed to save note") }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error saving note", e)
+                Log.e(TAG, "saveNote: Exception during save.", e)
                 _uiState.update {
                     it.copy(isSaving = false, error = e.message ?: "Failed to save note")
                 }
             }
         }
+    }
+
+    fun clearReminderAndViewMode() {
+        if (_uiState.value.reminderAt == null) return // Нечего отменять
+
+        Log.d(TAG, "clearReminderAndViewMode called.")
+        _uiState.update { it.copy(reminderAt = null) }
+        saveNote(switchToViewModeAfterSave = false, fromViewModeClearReminder = true)
     }
 
     fun hasUnsavedChanges(): Boolean {
@@ -882,14 +985,14 @@ class NoteDetailViewModel @Inject constructor(
         Log.d(TAG, "Reminder set in ViewModel to: $dateTimeMillis")
     }
 
-    fun onClearReminder() {
+    fun onClearReminder() { // Вызывается из диалога в режиме РЕДАКТИРОВАНИЯ
         _uiState.update {
             it.copy(
                 reminderAt = null,
                 showReminderDialog = false
             )
         }
-        Log.d(TAG, "Reminder cleared in ViewModel.")
+        Log.d(TAG, "Reminder cleared in ViewModel (edit mode).")
     }
 
     private fun scheduleOrCancelReminderWorker(

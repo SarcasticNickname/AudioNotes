@@ -108,8 +108,8 @@ dependencies {
 
     implementation(libs.jsoup)
 
-    // Firebase BOM (Bill of Materials) - управляет версиями Firebase библиотек
-    implementation(platform(libs.firebase.bom)) // Используй последнюю версию BOM
+    // Firebase BOM (Bill of Materials)
+    implementation(platform(libs.firebase.bom))
 
     // Firebase Authentication (включает Google Sign-In)
     implementation(libs.firebase.auth.ktx)
@@ -117,7 +117,9 @@ dependencies {
     implementation(libs.firebase.firestore.ktx)
 
     // Google Sign-In client (часть Google Play Services)
-    implementation(libs.play.services.auth) // Используй последнюю версию
+    implementation(libs.play.services.auth)
+
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
 }
 
 hilt {
