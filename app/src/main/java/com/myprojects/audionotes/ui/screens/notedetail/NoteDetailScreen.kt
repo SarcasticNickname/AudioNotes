@@ -59,10 +59,13 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
-// --- ViewContentPart, parseHtmlContentForViewMode, formatDuration, convertForHtmlCompat (остаются как были из твоего кода) ---
+// --- ViewContentPart, parseHtmlContentForViewMode, formatDuration, convertForHtmlCompat ---
+// (Эти вспомогательные классы и функции остаются без изменений, как в твоем коде)
 sealed interface ViewContentPart
 data class TextPart(val htmlSegment: String) : ViewContentPart
 data class AudioPart(val block: NoteBlock) : ViewContentPart
+
+private const val UI_TAG = "NoteDetailUI"
 
 fun parseHtmlContentForViewMode(
     htmlContent: String?,
@@ -170,6 +173,9 @@ fun NoteDetailScreen(
         viewModel::onNotificationPermissionResult
     )
 
+    // Состояние для отображения диалога информации о напоминании в режиме просмотра
+    var showViewModeReminderInfoDialog by remember { mutableStateOf(false) }
+
     LaunchedEffect(uiState.notificationPermissionStatus) {
         if (uiState.notificationPermissionStatus == NotificationPermissionStatus.DENIED) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -179,7 +185,8 @@ fun NoteDetailScreen(
         }
     }
 
-    if (uiState.showReminderDialog) {
+    // Диалог редактирования/установки напоминания (только в режиме редактирования)
+    if (uiState.isEditing && uiState.showReminderDialog) {
         ReminderDateTimePickerDialog(
             uiState.reminderAt,
             viewModel::onSetReminder,
@@ -187,6 +194,33 @@ fun NoteDetailScreen(
             viewModel::onClearReminder
         )
     }
+
+    // Диалог информации о напоминании (только в режиме просмотра)
+    if (!uiState.isEditing && showViewModeReminderInfoDialog) {
+        val reminderTime = uiState.reminderAt
+        val isReminderSetAndFuture =
+            reminderTime != null && reminderTime > System.currentTimeMillis()
+        val reminderText = if (isReminderSetAndFuture) {
+            val sdf = remember { SimpleDateFormat("EEE, d MMM yyyy, HH:mm", Locale.getDefault()) }
+            "Напоминание установлено на: ${sdf.format(Date(reminderTime!!))}"
+        } else if (reminderTime != null) {
+            "Напоминание было установлено на прошлое время."
+        } else {
+            "Напоминание не установлено."
+        }
+
+        AlertDialog(
+            onDismissRequest = { showViewModeReminderInfoDialog = false },
+            title = { Text("Информация о напоминании") },
+            text = { Text(reminderText) },
+            confirmButton = {
+                TextButton(onClick = { showViewModeReminderInfoDialog = false }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
 
     BackHandler(true) {
         if (uiState.isEditing) {
@@ -200,13 +234,13 @@ fun NoteDetailScreen(
     val bodyLargeFontSizeSp = MaterialTheme.typography.bodyLarge.fontSize.value
     val onSurfaceColorArgb = MaterialTheme.colorScheme.onSurface.toArgb()
 
-    var showCategoryMenu by remember { mutableStateOf(false) } // Состояние для отображения меню категорий
+    var showCategoryMenu by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { /* Заголовок без изменений */
+                    title = {
                         if (uiState.isEditing) BasicTextField(
                             value = uiState.noteTitle,
                             onValueChange = viewModel::updateNoteTitle,
@@ -235,7 +269,7 @@ fun NoteDetailScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                     },
-                    navigationIcon = { /* Кнопка назад без изменений */
+                    navigationIcon = {
                         IconButton(onClick = {
                             if (uiState.isEditing) {
                                 if (uiState.isSpeechToTextActive) viewModel.handleSpeechToTextButtonPress()
@@ -245,12 +279,11 @@ fun NoteDetailScreen(
                         }) { Icon(Icons.Filled.ArrowBack, "Go back") }
                     },
                     actions = {
-                        // Кнопка выбора категории (только в режиме редактирования)
                         if (uiState.isEditing) {
-                            Box { // Обертка для позиционирования DropdownMenu
+                            Box {
                                 IconButton(onClick = { showCategoryMenu = true }) {
                                     Icon(
-                                        imageVector = Icons.Outlined.Label, // Иконка для категорий
+                                        imageVector = Icons.Outlined.Label,
                                         contentDescription = "Select Category",
                                         tint = if (uiState.selectedCategory != NoteCategory.NONE) uiState.selectedCategory.color else LocalContentColor.current.copy(
                                             alpha = 0.6f
@@ -261,7 +294,7 @@ fun NoteDetailScreen(
                                     expanded = showCategoryMenu,
                                     onDismissRequest = { showCategoryMenu = false }
                                 ) {
-                                    NoteCategory.entries.forEach { category -> // Показываем все, включая NONE
+                                    NoteCategory.entries.forEach { category ->
                                         DropdownMenuItem(
                                             text = {
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -301,19 +334,28 @@ fun NoteDetailScreen(
                             }
                         }
 
-                        // Кнопка Напоминания
-                        IconButton(onClick = { viewModel.onReminderIconClick() }) {
+                        IconButton(
+                            onClick = {
+                                if (uiState.isEditing) {
+                                    viewModel.onReminderIconClick() // Открывает ReminderDateTimePickerDialog через ViewModel
+                                } else {
+                                    showViewModeReminderInfoDialog =
+                                        true // Открывает AlertDialog информации
+                                }
+                            }
+                            // enabled не нужен, т.к. клик обрабатывается по-разному
+                        ) {
                             val reminderSetAndFuture =
                                 uiState.reminderAt != null && (uiState.reminderAt
                                     ?: 0) > System.currentTimeMillis()
                             Icon(
                                 if (reminderSetAndFuture) Icons.Filled.NotificationsActive else Icons.Outlined.Notifications,
                                 "Set Reminder",
-                                tint = if (reminderSetAndFuture) MaterialTheme.colorScheme.primary else LocalContentColor.current
+                                tint = if (reminderSetAndFuture) MaterialTheme.colorScheme.primary
+                                else LocalContentColor.current // Обычный цвет, если не установлено или в прошлом
                             )
                         }
 
-                        // Кнопка Сохранить (в режиме редактирования) или Удалить/Редактировать (в режиме просмотра)
                         if (uiState.isEditing) {
                             IconButton(
                                 onClick = { viewModel.saveNote(true) },
@@ -340,7 +382,6 @@ fun NoteDetailScreen(
                         }
                     }
                 )
-                // Панель форматирования (без изменений)
                 AnimatedVisibility(
                     visible = showFormattingPanel,
                     enter = slideInVertically { -it },
@@ -379,7 +420,7 @@ fun NoteDetailScreen(
                             )
                         }
                         VerticalDivider()
-                        IconButton(onClick = { viewModel.changeTextColor(Color.Unspecified) }) {
+                        IconButton(onClick = { viewModel.changeTextColor(Color.Black) }) {
                             Icon(
                                 Icons.Filled.FormatColorReset,
                                 "Clr"
@@ -427,7 +468,6 @@ fun NoteDetailScreen(
                         }
                     }
                 }
-                // Отображение выбранной категории под TopAppBar в режиме просмотра (если она не NONE)
                 if (!uiState.isEditing && uiState.selectedCategory != NoteCategory.NONE) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -438,12 +478,11 @@ fun NoteDetailScreen(
                                 end = 16.dp,
                                 top = 4.dp,
                                 bottom = 0.dp
-                            ) // Уменьшил нижний отступ
-                            //.background(MaterialTheme.colorScheme.surfaceColorAtElevation(1.dp), RoundedCornerShape(8.dp)) // Можно убрать фон, если мешает
+                            )
                             .padding(
                                 horizontal = 0.dp,
                                 vertical = 4.dp
-                            ) // Убрал горизонтальный, чтобы было ближе к заголовку
+                            )
                     ) {
                         Box(
                             modifier = Modifier
@@ -454,20 +493,23 @@ fun NoteDetailScreen(
                         Spacer(Modifier.width(6.dp))
                         Text(
                             text = uiState.selectedCategory.displayName,
-                            style = MaterialTheme.typography.labelMedium, // LabelMedium или BodySmall
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
         },
-        // ВОЗВРАЩАЕМ FLOATING ACTION BUTTON ИЗ ТВОЕГО ИСХОДНОГО КОДА
         floatingActionButton = {
             if (uiState.isEditing) {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     FloatingActionButton(
                         onClick = {
-                            if (!uiState.isRecording) { // Не запускать STT, если идет обычная запись
+                            Log.d(
+                                UI_TAG,
+                                "STT FAB clicked: isRecording=${uiState.isRecording}, permissionGranted=${uiState.permissionGranted}, isSpeechToTextActive=${uiState.isSpeechToTextActive}"
+                            )
+                            if (!uiState.isRecording) {
                                 if (uiState.permissionGranted) {
                                     viewModel.handleSpeechToTextButtonPress()
                                 } else {
@@ -485,7 +527,7 @@ fun NoteDetailScreen(
 
                     FloatingActionButton(
                         onClick = {
-                            if (!uiState.isSpeechToTextActive && !uiState.isSaving) { // Не запускаем запись, если STT активен или идет сохранение
+                            if (!uiState.isSpeechToTextActive && !uiState.isSaving) {
                                 viewModel.handleRecordButtonPress()
                             }
                         },
@@ -504,17 +546,14 @@ fun NoteDetailScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues) // Применяем отступы от Scaffold (включая TopAppBar)
+                .padding(paddingValues)
                 .padding(
                     start = 16.dp,
                     end = 16.dp,
                     top = 8.dp,
                     bottom = 72.dp
-                ) // Дополнительные отступы для контента
+                )
         ) {
-            // --- Содержимое LazyColumn (редактор, плееры) остается БЕЗ ИЗМЕНЕНИЙ ---
-            // То есть, вся логика отображения RichTextEditor, AudioPlayerItem,
-            // состояний загрузки, ошибок и пустого состояния остается такой же, как в твоем исходном коде.
             if (uiState.isLoading && (uiState.noteId == null || uiState.noteId == -1L || (uiState.noteId != 0L && uiState.initialHtmlContentForEditor == null))) {
                 item {
                     Box(
@@ -552,8 +591,7 @@ fun NoteDetailScreen(
                             placeholder = { Text("Write your note here...") }
                         )
                     }
-                    // Отображение аудио-плееров в режиме редактирования
-                    if (uiState.displayedAudioBlocks.isNotEmpty()) { // Показываем всегда, если есть
+                    if (uiState.displayedAudioBlocks.isNotEmpty()) {
                         item {
                             Spacer(Modifier.height(16.dp)); Text(
                             "Attached Audio:",
@@ -570,7 +608,7 @@ fun NoteDetailScreen(
                                 if (uiState.currentPlayingAudioBlockId == block.id) uiState.currentAudioPositionMs else 0,
                                 (block.audioDurationMs ?: 0L).toInt(),
                                 { viewModel.playAudio(block.id) },
-                                { viewModel.deleteAudioBlockFromPlayer(block.id) }, // Кнопка удаления активна
+                                { viewModel.deleteAudioBlockFromPlayer(block.id) },
                                 { progress ->
                                     viewModel.onSeekAudio(
                                         block.id,
@@ -625,7 +663,7 @@ fun NoteDetailScreen(
                                     if (uiState.currentPlayingAudioBlockId == part.block.id) uiState.currentAudioPositionMs else 0,
                                     (part.block.audioDurationMs ?: 0L).toInt(),
                                     { viewModel.playAudio(part.block.id) },
-                                    {}, // Нет кнопки удаления
+                                    {},
                                     { progress ->
                                         viewModel.onSeekAudio(
                                             part.block.id,
@@ -641,7 +679,6 @@ fun NoteDetailScreen(
                 }
             }
         }
-        // Диалог запроса разрешения на микрофон (без изменений)
         if (uiState.showPermissionRationaleDialog && uiState.isEditing) {
             AlertDialog(
                 onDismissRequest = viewModel::onPermissionRationaleDismissed,
@@ -666,7 +703,8 @@ fun NoteDetailScreen(
     }
 }
 
-// --- ReminderDateTimePickerDialog, VerticalDivider, AudioPlayerItem (остаются БЕЗ ИЗМЕНЕНИЙ, как в твоем исходном коде или моем предыдущем полном варианте) ---
+// --- ReminderDateTimePickerDialog, VerticalDivider, AudioPlayerItem ---
+// (Эти Composable функции остаются без изменений, как в твоем коде)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReminderDateTimePickerDialog(

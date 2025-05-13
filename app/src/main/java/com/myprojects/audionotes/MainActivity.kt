@@ -5,12 +5,14 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.navigation.NavHostController
@@ -20,8 +22,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.myprojects.audionotes.ui.navigation.Screen
+import com.myprojects.audionotes.ui.screens.archived.ArchivedNotesScreen
 import com.myprojects.audionotes.ui.screens.notedetail.NoteDetailScreen
 import com.myprojects.audionotes.ui.screens.notelist.NoteListScreen
+import com.myprojects.audionotes.ui.screens.settings.SettingsScreen // Импорт экрана настроек
 import com.myprojects.audionotes.ui.theme.AudioNotesTheme
 import com.myprojects.audionotes.util.NotificationHelper
 import dagger.hilt.android.AndroidEntryPoint
@@ -38,7 +42,7 @@ class MainActivity : ComponentActivity() {
             AudioNotesAppContent(
                 onNavControllerReady = { navController ->
                     navControllerRef = navController
-                    if (savedInstanceState == null) { // Обрабатываем интент только при первом создании
+                    if (savedInstanceState == null) {
                         handleIntent(intent)
                     }
                 }
@@ -50,7 +54,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         Log.d(TAG_MAIN_ACTIVITY, "onNewIntent called. New Intent: $intent")
         intent?.let {
-            setIntent(it) // Обновляем интент Activity
+            setIntent(it)
             handleIntent(it)
         }
     }
@@ -75,7 +79,10 @@ class MainActivity : ComponentActivity() {
                 TAG_MAIN_ACTIVITY,
                 "No NAVIGATE_TO_NOTE_ID_EXTRA or it's -1."
             )
-            if (navControllerRef == null) Log.w(TAG_MAIN_ACTIVITY, "navControllerRef is null.")
+            if (navControllerRef == null) Log.w(
+                TAG_MAIN_ACTIVITY,
+                "navControllerRef is null for intent handling."
+            )
         }
     }
 }
@@ -83,26 +90,31 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AudioNotesAppContent(onNavControllerReady: (NavHostController) -> Unit) {
     AudioNotesTheme {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             val navController = rememberNavController()
             LaunchedEffect(navController) {
                 onNavControllerReady(navController)
             }
 
-            NavHost(
-                navController = navController,
-                startDestination = Screen.NoteList.route
-            ) {
+            NavHost(navController = navController, startDestination = Screen.NoteList.route) {
                 composable(route = Screen.NoteList.route) {
                     NoteListScreen(
+                        navController = navController,
+                        // Эти параметры теперь не нужны, т.к. NoteListScreen сам управляет навигацией
+                        // Оставляю для возможной совместимости с Preview или если они используются иначе
                         onNoteClick = { noteId ->
-                            navController.navigate(Screen.NoteDetail.createRoute(noteId))
+                            navController.navigate(
+                                Screen.NoteDetail.createRoute(
+                                    noteId
+                                )
+                            )
                         },
                         onAddNoteClick = { noteId ->
-                            navController.navigate(Screen.NoteDetail.createRoute(noteId))
+                            navController.navigate(
+                                Screen.NoteDetail.createRoute(
+                                    noteId
+                                )
+                            )
                         }
                     )
                 }
@@ -111,6 +123,12 @@ fun AudioNotesAppContent(onNavControllerReady: (NavHostController) -> Unit) {
                     arguments = listOf(navArgument("noteId") { type = NavType.LongType })
                 ) {
                     NoteDetailScreen(navController = navController)
+                }
+                composable(route = Screen.ArchivedNotes.route) {
+                    ArchivedNotesScreen(navController = navController)
+                }
+                composable(route = Screen.Settings.route) { // Добавляем маршрут для экрана настроек
+                    SettingsScreen(navController = navController)
                 }
             }
         }
@@ -121,6 +139,6 @@ fun AudioNotesAppContent(onNavControllerReady: (NavHostController) -> Unit) {
 @Composable
 fun DefaultPreview() {
     AudioNotesTheme {
-        Surface(modifier = Modifier.fillMaxSize()) { Text("App Preview") }
+        AudioNotesAppContent(onNavControllerReady = {})
     }
 }

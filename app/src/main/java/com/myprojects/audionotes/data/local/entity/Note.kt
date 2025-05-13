@@ -11,5 +11,6 @@ data class Note(
     val createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis(),
     var reminderAt: Long? = null,
-    var category: String = NoteCategory.NONE.name
+    var category: String = NoteCategory.NONE.name,
+    var isArchived: Boolean = false
 )

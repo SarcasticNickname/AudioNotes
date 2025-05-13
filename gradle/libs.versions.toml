@@ -1,6 +1,8 @@
 [versions]
 accompanistPermissions = "0.34.0"
 agp = "8.4.0"
+firebaseBom = "33.0.0"
+jsoup = "1.17.2"
 kotlin = "2.0.10"
 ksp = "2.0.10-1.0.24"
 hilt = "2.48.1"
@@ -12,6 +14,7 @@ composeBom      = "2024.06.00"
 composeCompiler = "2.0.0"
 navigationCompose = "2.7.7"
 hiltNavigationCompose = "1.1.0"
+playServicesAuth = "21.1.0"
 richeditorCompose = "1.0.0-rc06"
 room = "2.6.1"
 coroutines = "1.7.3"
@@ -23,6 +26,10 @@ junitVersion = "1.1.5"
 
 [libraries]
 accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanistPermissions" }
+firebase-auth-ktx = { module = "com.google.firebase:firebase-auth-ktx" }
+firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
+firebase-firestore-ktx = { module = "com.google.firebase:firebase-firestore-ktx" }
+jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 
@@ -60,6 +67,7 @@ androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-
 
 androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "playServicesAuth" }
 richeditor-compose = { module = "com.mohamedrejeb.richeditor:richeditor-compose-android", version.ref = "richeditorCompose" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

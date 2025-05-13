@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -105,7 +106,18 @@ dependencies {
 
     implementation(libs.richeditor.compose)
 
-    implementation("org.jsoup:jsoup:1.17.2")
+    implementation(libs.jsoup)
+
+    // Firebase BOM (Bill of Materials) - управляет версиями Firebase библиотек
+    implementation(platform(libs.firebase.bom)) // Используй последнюю версию BOM
+
+    // Firebase Authentication (включает Google Sign-In)
+    implementation(libs.firebase.auth.ktx)
+
+    implementation(libs.firebase.firestore.ktx)
+
+    // Google Sign-In client (часть Google Play Services)
+    implementation(libs.play.services.auth) // Используй последнюю версию
 }
 
 hilt {

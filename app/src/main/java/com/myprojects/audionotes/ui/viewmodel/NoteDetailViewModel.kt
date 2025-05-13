@@ -23,7 +23,6 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.mohamedrejeb.richeditor.model.RichTextState
-import com.myprojects.audionotes.data.local.dao.cleanAudioPlaceholdersForRegex
 import com.myprojects.audionotes.data.local.entity.BlockType
 import com.myprojects.audionotes.data.local.entity.Note
 import com.myprojects.audionotes.data.local.entity.NoteBlock
@@ -62,58 +61,73 @@ class NoteDetailViewModel @Inject constructor(
     private val audioRecorder: IAudioRecorder,
     private val audioPlayer: IAudioPlayer,
     private val speechProcessor: ISpeechToTextProcessor,
-    private val workManager: WorkManager, // НОВОЕ: для напоминаний
-    @ApplicationContext private val appContext: Context, // НОВОЕ: для проверки разрешений
+    private val workManager: WorkManager,
+    @ApplicationContext private val appContext: Context,
     private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
     private val currentNoteIdFromArgs: Long = savedStateHandle.get<Long>("noteId") ?: -1L
     private var originalNoteTitle: String = ""
-    private var originalHtmlContent: String = "<p><br></p>" // Начальное значение для HTML
+    private var originalHtmlContent: String = "<p><br></p>"
     private var initialNoteCreatedAt: Long? = null
-    private var originalReminderAt: Long? = null // НОВОЕ: для отслеживания изменений напоминания
+    private var originalReminderAt: Long? = null
+    private var originalCategoryName: String = NoteCategory.NONE.name // ИСХОДНАЯ КАТЕГОРИЯ
 
     val richTextState = RichTextState()
 
     private val _uiState =
-        MutableStateFlow(NoteDetailUiState(initialHtmlContentForEditor = originalHtmlContent))
+        MutableStateFlow(
+            NoteDetailUiState(
+                initialHtmlContentForEditor = originalHtmlContent,
+                // Устанавливаем начальную категорию по умолчанию для UiState
+                selectedCategory = NoteCategory.fromName(originalCategoryName)
+            )
+        )
     val uiState: StateFlow<NoteDetailUiState> = _uiState.asStateFlow()
 
-    // _pendingAudioBlocks используется для временного хранения аудио-блоков до их сохранения в БД
-    // и для корректного отображения плееров в режиме редактирования.
     private val _pendingAudioBlocks = mutableStateListOf<NoteBlock>()
     private var audioPositionJob: Job? = null
     private var audioPlayerStateJob: Job? = null
 
     companion object {
         private const val TAG = "NoteDetailVM_Rich"
-        private val PLACEHOLDER_REGEX = Regex("\\[AUDIO_ID\\s*:\\s*(\\d+)\\s*]")
+        const val TEMP_ID_THRESHOLD = 1_000_000_000_000L
     }
 
     init {
         Log.d(TAG, "ViewModel init. Received noteId: $currentNoteIdFromArgs")
+
+        //  Инициализируем текущий статус разрешения
+        val micGranted = ContextCompat.checkSelfPermission(
+            appContext, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        _uiState.update { it.copy(permissionGranted = micGranted) }
+
         val isTrulyNewNoteScenario = currentNoteIdFromArgs == -1L || currentNoteIdFromArgs == 0L
         _uiState.update {
             it.copy(
                 isEditing = isTrulyNewNoteScenario,
                 noteId = if (isTrulyNewNoteScenario) 0L else currentNoteIdFromArgs,
-                isLoading = !isTrulyNewNoteScenario // Загрузка, если это существующая заметка
+                isLoading = !isTrulyNewNoteScenario,
+                selectedCategory = if (isTrulyNewNoteScenario) NoteCategory.NONE else it.selectedCategory // Установка для новой заметки
             )
         }
 
         if (isTrulyNewNoteScenario) {
-            richTextState.setHtml(originalHtmlContent) // Устанавливаем пустой HTML
-            _uiState.update { it.copy(isLoading = false, noteTitle = "New Note") }
-            // Для новой заметки displayedAudioBlocks должен быть пуст, т.к. _pendingAudioBlocks пуст
+            originalNoteTitle = "New Note" // Устанавливаем здесь для новой заметки
+            originalHtmlContent = "<p><br></p>"
+            originalCategoryName = NoteCategory.NONE.name // Инициализация для новой заметки
+            originalReminderAt = null
+            richTextState.setHtml(originalHtmlContent)
+            _uiState.update { it.copy(isLoading = false, noteTitle = originalNoteTitle) }
             parseTextAndUpdateDisplayedAudio()
         } else {
-            loadNoteData() // Загружаем существующую заметку
+            loadNoteData()
         }
 
         observeAudioPlayer()
         observeSpeechProcessor()
 
-        // Отслеживание изменений в тексте редактора для обновления списка аудио-блоков
         viewModelScope.launch {
             snapshotFlow { richTextState.annotatedString.text }
                 .distinctUntilChanged()
@@ -141,8 +155,6 @@ class NoteDetailViewModel @Inject constructor(
                 if (recognizedText.isNotBlank()) {
                     val currentText = richTextState.annotatedString.text
                     val selection = richTextState.selection
-                    // Добавляем пробелы вокруг вставляемого текста, если это необходимо,
-                    // чтобы слова не слипались.
                     val prefix =
                         if (selection.start > 0 && currentText.getOrNull(selection.start - 1)
                                 ?.isWhitespace() == false && recognizedText.firstOrNull()
@@ -155,7 +167,7 @@ class NoteDetailViewModel @Inject constructor(
                     ) " " else ""
                     richTextState.replaceSelectedText(prefix + recognizedText.trim() + suffix)
                     Log.d(TAG, "Text inserted into RichTextState via SpeechProcessor.")
-                    _uiState.update { it.copy(error = null) } // Сбрасываем ошибку, если была
+                    _uiState.update { it.copy(error = null) }
                 }
             }
         }
@@ -192,10 +204,10 @@ class NoteDetailViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             error = e.localizedMessage ?: "Failed to load note",
-                            isEditing = true
+                            isEditing = true // Если ошибка, переходим в режим редактирования новой заметки
                         )
                     }
-                    setAsNewNote()
+                    setAsNewNote() // В случае ошибки загрузки, инициализируем как новую заметку
                 }
                 .collect { noteWithContentAndAudioBlocks ->
                     if (noteWithContentAndAudioBlocks != null) {
@@ -203,15 +215,14 @@ class NoteDetailViewModel @Inject constructor(
                         val audioBlocks = noteWithContentAndAudioBlocks.audioBlocks
                         Log.d(
                             TAG,
-                            "loadNoteData: Note loaded: ${note.title}, AudioBlock count: ${audioBlocks.size}, ReminderAt: ${note.reminderAt}"
+                            "loadNoteData: Note loaded: ${note.title}, AudioBlock count: ${audioBlocks.size}, ReminderAt: ${note.reminderAt}, Category: ${note.category}"
                         )
 
                         originalNoteTitle = note.title
-                        // HTML из БД УЖЕ ДОЛЖЕН БЫТЬ с прямыми кириллическими символами,
-                        // так как мы его декодировали при сохранении с помощью Jsoup.
                         originalHtmlContent = note.content.ifBlank { "<p><br></p>" }
                         initialNoteCreatedAt = note.createdAt
                         originalReminderAt = note.reminderAt
+                        originalCategoryName = note.category // СОХРАНЯЕМ ИСХОДНУЮ КАТЕГОРИЮ
 
                         Log.d(
                             TAG,
@@ -236,7 +247,8 @@ class NoteDetailViewModel @Inject constructor(
                                 isLoading = false,
                                 error = null,
                                 initialHtmlContentForEditor = originalHtmlContent,
-                                reminderAt = note.reminderAt
+                                reminderAt = note.reminderAt,
+                                selectedCategory = NoteCategory.fromName(note.category) // УСТАНАВЛИВАЕМ ЗАГРУЖЕННУЮ КАТЕГОРИЮ
                             )
                         }
                         parseTextAndUpdateDisplayedAudio()
@@ -258,6 +270,7 @@ class NoteDetailViewModel @Inject constructor(
         originalHtmlContent = "<p><br></p>"
         initialNoteCreatedAt = System.currentTimeMillis()
         originalReminderAt = null
+        originalCategoryName = NoteCategory.NONE.name // ИНИЦИАЛИЗАЦИЯ ДЛЯ НОВОЙ ЗАМЕТКИ
         richTextState.setHtml(originalHtmlContent)
         _pendingAudioBlocks.clear()
         _uiState.update {
@@ -269,7 +282,8 @@ class NoteDetailViewModel @Inject constructor(
                 initialHtmlContentForEditor = originalHtmlContent,
                 reminderAt = null,
                 displayedAudioBlocks = emptyList(),
-                error = null
+                error = null,
+                selectedCategory = NoteCategory.NONE // УСТАНАВЛИВАЕМ КАТЕГОРИЮ ПО УМОЛЧАНИЮ
             )
         }
         parseTextAndUpdateDisplayedAudio()
@@ -281,7 +295,6 @@ class NoteDetailViewModel @Inject constructor(
             audioPlayer.playerState.collect { state ->
                 _uiState.update { it.copy(audioPlayerState = state) }
                 if (state == PlayerState.COMPLETED || state == PlayerState.IDLE || state == PlayerState.ERROR) {
-                    // Сбрасываем состояние воспроизведения, если плеер остановился или завершил
                     _uiState.update {
                         it.copy(
                             currentPlayingAudioBlockId = null,
@@ -294,7 +307,7 @@ class NoteDetailViewModel @Inject constructor(
         viewModelScope.launch {
             audioPlayer.currentPlayingBlockId.collect { blockId ->
                 _uiState.update { it.copy(currentPlayingAudioBlockId = blockId) }
-                if (blockId != _uiState.value.currentPlayingAudioBlockId) { // Если ID сменился, сбросить позицию
+                if (blockId != _uiState.value.currentPlayingAudioBlockId) {
                     _uiState.update {
                         it.copy(
                             currentAudioPositionMs = 0,
@@ -309,14 +322,14 @@ class NoteDetailViewModel @Inject constructor(
                 audioPlayer.currentPositionMs,
                 audioPlayer.totalDurationMs
             ) { pos, dur -> Pair(pos, dur) }.distinctUntilChanged().collect { (pos, dur) ->
-                if (_uiState.value.currentPlayingAudioBlockId != null) { // Обновлять только если что-то играет
+                if (_uiState.value.currentPlayingAudioBlockId != null) {
                     _uiState.update {
                         it.copy(
                             currentAudioPositionMs = pos,
                             currentAudioTotalDurationMs = dur
                         )
                     }
-                } else { // Если ничего не играет, сбросить
+                } else {
                     _uiState.update {
                         it.copy(
                             currentAudioPositionMs = 0,
@@ -328,11 +341,11 @@ class NoteDetailViewModel @Inject constructor(
         }
     }
 
-    fun onPermissionResult(isGranted: Boolean) { // Для микрофона
+    fun onPermissionResult(isGranted: Boolean) {
         _uiState.update {
             it.copy(
                 permissionGranted = isGranted,
-                showPermissionRationaleDialog = false // Скрываем диалог объяснения
+                showPermissionRationaleDialog = false
             )
         }
         if (!isGranted) {
@@ -346,18 +359,16 @@ class NoteDetailViewModel @Inject constructor(
         _uiState.update { it.copy(notificationPermissionStatus = newStatus) }
 
         if (isGranted) {
-            // Если разрешение было только что дано, и пользователь уже пытался открыть диалог напоминаний,
-            // то открываем его.
             if (_uiState.value.showReminderDialog && newStatus == NotificationPermissionStatus.GRANTED) {
-                // Диалог уже должен быть открыт или откроется по флагу showReminderDialog
+                // Диалог откроется или уже открыт
             }
-            _uiState.update { it.copy(error = null) } // Убираем возможную ошибку о разрешении
+            _uiState.update { it.copy(error = null) }
         } else {
             _uiState.update { it.copy(error = "Notification permission denied. Reminders may not work.") }
         }
     }
 
-    fun onPermissionRationaleDismissed() { // Для микрофона
+    fun onPermissionRationaleDismissed() {
         _uiState.update { it.copy(showPermissionRationaleDialog = false) }
     }
 
@@ -366,12 +377,8 @@ class NoteDetailViewModel @Inject constructor(
     }
 
     private fun parseTextAndUpdateDisplayedAudio() {
-        // Extract the raw HTML from the editor, undoing any placeholder-escaping
-        val htmlForSearch = richTextState
-            .toHtml()
-            .cleanAudioPlaceholdersForRegex()
+        val htmlForSearch = richTextState.annotatedString.text
 
-        // Find all [AUDIO_ID:xxx] in the HTML
         val regex = Regex(
             Regex.escape(AUDIO_PLACEHOLDER_PREFIX) +
                     "\\s*(\\d+)\\s*" +
@@ -384,13 +391,10 @@ class NoteDetailViewModel @Inject constructor(
 
         Log.d(TAG, "parseTextAndUpdateDisplayedAudio: Found IDs in HTML: $foundAudioIdsInText")
 
-        // Filter your pending blocks down to just those referenced in the editor,
-        // preserving their original orderIndex.
         val newDisplayedAudioBlocks = _pendingAudioBlocks
             .filter { foundAudioIdsInText.contains(it.id) }
             .sortedBy { it.orderIndex }
 
-        // Only update UI state if IDs/order actually changed
         if (_uiState.value.displayedAudioBlocks.map { it.id }
             != newDisplayedAudioBlocks.map { it.id }
         ) {
@@ -403,13 +407,13 @@ class NoteDetailViewModel @Inject constructor(
 
     fun toggleEditMode() {
         val currentIsEditing = _uiState.value.isEditing
-        if (currentIsEditing) { // Если выходим из режима редактирования
+        if (currentIsEditing) {
             if (hasUnsavedChanges()) {
-                saveNote(switchToViewModeAfterSave = true) // Сохраняем и переключаем
+                saveNote(switchToViewModeAfterSave = true)
             } else {
-                _uiState.update { it.copy(isEditing = false) } // Просто переключаем
+                _uiState.update { it.copy(isEditing = false) }
             }
-        } else { // Если входим в режим редактирования
+        } else {
             Log.d(
                 TAG,
                 "toggleEditMode: entering edit, text='${richTextState.annotatedString.text}'"
@@ -418,24 +422,34 @@ class NoteDetailViewModel @Inject constructor(
         }
     }
 
+    // Универсальная проверка разрешения на микрофон
+    private fun ensureMicPermission(): Boolean {
+        return if (_uiState.value.permissionGranted) {
+            true
+        } else {
+            // показываем свой AlertDialog (rationale)
+            if (!_uiState.value.showPermissionRationaleDialog) {
+                _uiState.update { it.copy(showPermissionRationaleDialog = true) }
+            }
+            false
+        }
+    }
+
     fun handleRecordButtonPress() {
         if (_uiState.value.isRecording) {
-            stopRecordingAudio()
-        } else if (_uiState.value.permissionGranted) { // Проверяем разрешение на микрофон
-            if (!_uiState.value.isSpeechToTextActive) { // Не начинаем запись, если STT активен
-                startRecordingAudioInternal()
-            }
-        } else {
-            // Запрашиваем разрешение на микрофон
-            _uiState.update { it.copy(showPermissionRationaleDialog = true) }
+            stopRecordingAudio(); return
         }
+        // единая проверка разрешения
+        if (!ensureMicPermission()) return
+        if (_uiState.value.isSpeechToTextActive) return
+        startRecordingAudioInternal()
     }
 
     private fun startRecordingAudioInternal() {
         if (!_uiState.value.permissionGranted) {
             _uiState.update { it.copy(error = "Microphone permission not granted.") }; return
         }
-        if (audioRecorder.isRecording()) return // Уже записываем
+        if (audioRecorder.isRecording()) return
         viewModelScope.launch {
             val audioFile = audioRecorder.createAudioFile()
             if (audioFile != null) {
@@ -457,15 +471,13 @@ class NoteDetailViewModel @Inject constructor(
             _uiState.update { it.copy(isRecording = false) }
             if (filePath != null) {
                 val duration = getAudioFileDuration(filePath)
-                // Создаем новый NoteBlock с временным ID
                 val newAudioBlock = NoteBlock(
-                    id = System.currentTimeMillis(), // Временный ID, будет заменен при сохранении в БД
-                    noteId = _uiState.value.noteId
-                        ?: 0L, // Временный noteId, будет обновлен при сохранении
+                    id = System.currentTimeMillis(),
+                    noteId = _uiState.value.noteId ?: 0L,
                     type = BlockType.AUDIO,
                     audioFilePath = filePath,
                     audioDurationMs = duration,
-                    orderIndex = _pendingAudioBlocks.size // Порядок для новых блоков
+                    orderIndex = _pendingAudioBlocks.size
                 )
                 _pendingAudioBlocks.add(newAudioBlock)
                 Log.d(
@@ -473,10 +485,9 @@ class NoteDetailViewModel @Inject constructor(
                     "stopRecordingAudio: Added new block to _pendingAudioBlocks: ID=${newAudioBlock.id}, path=${newAudioBlock.audioFilePath}"
                 )
                 val placeholder = createAudioPlaceholder(newAudioBlock.id)
-                // Вставляем плейсхолдер в текущую позицию курсора или заменяем выделение
                 richTextState.replaceSelectedText(placeholder)
                 Log.d(TAG, "stopRecordingAudio: Inserted placeholder '$placeholder'.")
-                // parseTextAndUpdateDisplayedAudio() будет вызван автоматически из-за изменения richTextState
+                parseTextAndUpdateDisplayedAudio()
             } else {
                 _uiState.update { it.copy(error = "Failed to save recording (file path is null).") }
             }
@@ -484,37 +495,50 @@ class NoteDetailViewModel @Inject constructor(
     }
 
     fun handleSpeechToTextButtonPress() {
-        viewModelScope.launch {
-            if (_uiState.value.isSpeechToTextActive) {
-                Log.d(TAG, "STT button pressed: stopping speech processor.")
-                speechProcessor.stopListening()
-                return@launch
-            }
+        // Лог при каждом нажатии
+        Log.d(
+            TAG, "handleSpeechToTextButtonPress called: " +
+                    "isSpeechToTextActive=${_uiState.value.isSpeechToTextActive}, " +
+                    "isRecording=${_uiState.value.isRecording}, " +
+                    "permissionGranted=${_uiState.value.permissionGranted}"
+        )
 
-            if (_uiState.value.isRecording) { // Не запускаем STT, если идет обычная запись
-                _uiState.update { it.copy(error = "Stop audio recording before using Speech-to-Text.") }
-                return@launch
-            }
-            if (!_uiState.value.permissionGranted) { // Проверяем разрешение на микрофон
-                _uiState.update {
-                    it.copy(
-                        showPermissionRationaleDialog = true, // Показываем диалог объяснения
-                        error = "Microphone permission needed for speech-to-text."
-                    )
-                }
-                return@launch
-            }
+        // 1) Если уже идёт распознавание — останавливаем
+        if (_uiState.value.isSpeechToTextActive) {
+            Log.d(TAG, "Stopping speech recognition")
+            speechProcessor.stopListening()
+            _uiState.update { it.copy(error = null) }
+            return
+        }
+
+        // 2) Если идёт запись аудио — блокируем
+        if (_uiState.value.isRecording) {
+            Log.d(TAG, "Cannot start STT while audio recording is active")
+            _uiState.update { it.copy(error = "Stop audio recording before using Speech-to-Text.") }
+            return
+        }
+
+        // 3) Проверяем разрешение на микрофон
+        if (!ensureMicPermission()) {
+            Log.d(TAG, "Microphone permission not granted; showing rationale")
+            return
+        }
+
+        // 4) Запускаем распознавание в корутине
+        viewModelScope.launch {
             if (!speechProcessor.isRecognitionAvailable()) {
+                Log.d(TAG, "Speech recognition service unavailable")
                 _uiState.update { it.copy(error = "Speech recognition service is not available on this device.") }
                 return@launch
             }
 
-            val sttLanguage = "ru-RU" // Можно сделать настраиваемым
-            Log.d(TAG, "STT button pressed: starting speech processor with lang $sttLanguage.")
+            val sttLanguage = "ru-RU"
+            Log.d(TAG, "Starting speech recognition with language: $sttLanguage")
             speechProcessor.startListening(sttLanguage)
-            _uiState.update { it.copy(error = null) } // Очищаем предыдущие ошибки
+            _uiState.update { it.copy(error = null) }
         }
     }
+
 
     private fun getAudioFileDuration(filePath: String): Long {
         return try {
@@ -529,7 +553,6 @@ class NoteDetailViewModel @Inject constructor(
     }
 
     fun playAudio(blockId: Long) {
-        // Ищем сначала среди отображаемых (уже сохраненных или отфильтрованных), потом среди всех pending
         val blockToPlay = _uiState.value.displayedAudioBlocks.find { it.id == blockId }
             ?: _pendingAudioBlocks.find { it.id == blockId }
 
@@ -540,7 +563,6 @@ class NoteDetailViewModel @Inject constructor(
             } else if (currentState.currentPlayingAudioBlockId == blockId && currentState.audioPlayerState == PlayerState.PAUSED) {
                 audioPlayer.resume()
             } else {
-                // Останавливаем предыдущее воспроизведение, если играл другой блок
                 if (currentState.currentPlayingAudioBlockId != null && currentState.currentPlayingAudioBlockId != blockId) {
                     audioPlayer.stop()
                 }
@@ -552,36 +574,46 @@ class NoteDetailViewModel @Inject constructor(
     fun deleteAudioBlockFromPlayer(blockId: Long) {
         viewModelScope.launch {
             val plainPlaceholder = createAudioPlaceholder(blockId)
-            // Для RichTextEditor, если плейсхолдер это просто текст, то replace должен сработать
-            val currentHtml = richTextState.toHtml()
-            var htmlChanged = false
+            val currentHtmlWithEntities =
+                richTextState.toHtml()
+            var textContentActuallyChanged =
+                false
 
-            if (currentHtml.contains(plainPlaceholder)) {
-                richTextState.setHtml(currentHtml.replace(plainPlaceholder, ""))
-                htmlChanged = true
-                Log.d(TAG, "Removed placeholder for block $blockId from HTML via replace.")
+
+            val currentHtmlDecoded = Parser.unescapeEntities(currentHtmlWithEntities, false)
+            Log.d(
+                TAG,
+                "deleteAudioBlockFromPlayer: Attempting to remove placeholder '$plainPlaceholder'."
+            )
+            Log.d(
+                TAG,
+                "deleteAudioBlockFromPlayer: HTML from editor (with entities): '${
+                    currentHtmlWithEntities.take(150)
+                }'"
+            )
+            Log.d(
+                TAG,
+                "deleteAudioBlockFromPlayer: Decoded HTML for search: '${currentHtmlDecoded.take(150)}'"
+            )
+
+
+            if (currentHtmlDecoded.contains(plainPlaceholder)) {
+                val newHtmlDecoded = currentHtmlDecoded.replace(plainPlaceholder, "")
+                richTextState.setHtml(newHtmlDecoded)
+                textContentActuallyChanged = true
+                Log.d(
+                    TAG,
+                    "Removed placeholder for block $blockId. Called richTextState.setHtml() with updated decoded HTML."
+                )
             } else {
-                // Если в HTML не нашли (например, из-за [), пробуем из raw text,
-                // но это может не обновить HTML редактора корректно без setHtml.
-                val currentRawText = richTextState.annotatedString.text
-                if (currentRawText.contains(plainPlaceholder)) {
-                    // Это сложнее, т.к. нужно удалить Span из AnnotatedString или пересоздать HTML
-                    // Простейший вариант - если HTML генерируется из AnnotatedString, то это может сработать
-                    // richTextState.setText(currentRawText.replace(plainPlaceholder, "")) // Если есть такой метод
-                    // richTextState.setHtml(currentRawText.replace(plainPlaceholder, "")) // Генерируем HTML из измененного текста
-                    // Это может быть неидеально, но для простого плейсхолдера может сработать
-                    Log.w(
-                        TAG,
-                        "Placeholder for block $blockId found in raw text but not directly in HTML. Attempting removal (may need review)."
-                    )
-                    // Если RichTextEditor имеет метод для удаления текста по совпадению, это было бы лучше.
-                    // Пока оставляем как есть, но это место может требовать доработки для сложных HTML.
-                } else {
-                    Log.w(
-                        TAG,
-                        "Placeholder for audio block $blockId not found in HTML or raw text for deletion."
-                    )
-                }
+                Log.w(
+                    TAG,
+                    "Placeholder '$plainPlaceholder' for audio block $blockId not found in DECODED HTML ('${
+                        currentHtmlDecoded.take(
+                            100
+                        )
+                    }...') for deletion."
+                )
             }
 
             val blockToRemove = _pendingAudioBlocks.find { it.id == blockId }
@@ -589,18 +621,29 @@ class NoteDetailViewModel @Inject constructor(
                 blockToRemove.audioFilePath?.let { filePath ->
                     try {
                         File(filePath).delete()
-                        Log.i(TAG, "Deleted audio file: $filePath")
+                        Log.i(TAG, "Deleted audio file: $filePath for block $blockId")
                     } catch (e: Exception) {
                         Log.e(TAG, "Error deleting file for block $blockId: $filePath", e)
                     }
                 }
-                _pendingAudioBlocks.remove(blockToRemove)
-                Log.d(TAG, "Removed block from _pendingAudioBlocks: ID=$blockId")
-                // Если HTML не изменился через setHtml, но блок удален из pending, нужно обновить displayedAudioBlocks
-                if (!htmlChanged) {
+                val removedFromPending = _pendingAudioBlocks.remove(blockToRemove)
+                Log.d(
+                    TAG,
+                    "Removed block from _pendingAudioBlocks: ID=$blockId, Success: $removedFromPending"
+                )
+
+                if (!textContentActuallyChanged && removedFromPending) {
+                    Log.d(
+                        TAG,
+                        "deleteAudioBlockFromPlayer: Text not changed, but block removed from pending. Calling parseTextAndUpdateDisplayedAudio()."
+                    )
                     parseTextAndUpdateDisplayedAudio()
                 }
-                // Если HTML изменился через setHtml, parseTextAndUpdateDisplayedAudio вызовется через snapshotFlow
+            } else {
+                Log.w(
+                    TAG,
+                    "Block ID $blockId not found in _pendingAudioBlocks for deletion. Current pending IDs: ${_pendingAudioBlocks.map { it.id }}"
+                )
             }
         }
     }
@@ -615,20 +658,17 @@ class NoteDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, error = null) }
             try {
-                // 1) Gather basic fields
                 val currentNoteId = _uiState.value.noteId?.takeIf { it != 0L } ?: 0L
                 val title = _uiState.value.noteTitle.ifBlank { "Untitled Note" }
                 val reminderTime = _uiState.value.reminderAt
+                val selectedCategoryName =
+                    _uiState.value.selectedCategory.name // ПОЛУЧАЕМ ИМЯ ВЫБРАННОЙ КАТЕГОРИИ
 
-                // 2) Get HTML from editor (with entities)
                 val htmlWithEntities = richTextState.toHtml()
                 Log.d(TAG, "saveNote: HTML from editor: '$htmlWithEntities'")
-
-                // 3) Decode entities to direct chars using Jsoup
                 val htmlDecoded = Parser.unescapeEntities(htmlWithEntities, false)
                 Log.d(TAG, "saveNote: Decoded HTML: '$htmlDecoded'")
 
-                // 4) Extract temp audio IDs from the raw annotated text
                 val rawText = richTextState.annotatedString.text
                 val idRegex = Regex(
                     Regex.escape(AUDIO_PLACEHOLDER_PREFIX) +
@@ -641,35 +681,35 @@ class NoteDetailViewModel @Inject constructor(
                     .toSet()
                 Log.d(TAG, "saveNote: temp audio IDs: $tempIds")
 
-                // 5) Filter & re‐index pending blocks for persistence
                 val audioToSave = _pendingAudioBlocks
                     .filter { tempIds.contains(it.id) }
                     .mapIndexed { idx, block -> block.copy(noteId = 0L, orderIndex = idx) }
 
-                // 6) Build the Note entity
                 val note = Note(
                     id = currentNoteId,
                     title = title,
-                    content = htmlDecoded,  // unescaped HTML
+                    content = htmlDecoded,
                     createdAt = if (currentNoteId == 0L) System.currentTimeMillis()
                     else (initialNoteCreatedAt ?: System.currentTimeMillis()),
                     updatedAt = System.currentTimeMillis(),
-                    reminderAt = reminderTime
+                    reminderAt = reminderTime,
+                    category = selectedCategoryName // ДОБАВЛЯЕМ КАТЕГОРИЮ В СОХРАНЯЕМЫЙ ОБЪЕКТ
                 )
 
-                // 7) Save via repository (DAO will do ID sync for you)
                 val savedNoteId = noteRepository.saveNote(note, audioToSave)
-                Log.i(TAG, "Note saved, id: $savedNoteId")
+                Log.i(TAG, "Note saved, id: $savedNoteId, category: $selectedCategoryName")
 
                 if (savedNoteId > 0L) {
                     if (currentNoteId == 0L) initialNoteCreatedAt = note.createdAt
                     savedStateHandle["noteId"] = savedNoteId
 
-                    // 8) (Re-)schedule or cancel reminders
                     scheduleOrCancelReminderWorker(savedNoteId, note.title, reminderTime)
+                    // ОБНОВЛЯЕМ ИСХОДНЫЕ ДАННЫЕ ПОСЛЕ УСПЕШНОГО СОХРАНЕНИЯ
+                    originalNoteTitle = title
+                    originalHtmlContent = htmlDecoded
                     originalReminderAt = reminderTime
+                    originalCategoryName = selectedCategoryName
 
-                    // 9) Update UI state & reload
                     _uiState.update {
                         it.copy(
                             isSaving = false,
@@ -677,7 +717,19 @@ class NoteDetailViewModel @Inject constructor(
                             isEditing = !switchToViewModeAfterSave
                         )
                     }
-                    loadNoteData()
+                    // Если мы вышли из режима редактирования, данные уже должны быть консистентными
+                    // с UiState. loadNoteData() здесь может быть избыточен, если original* поля обновлены.
+                    // Если switchToViewModeAfterSave = true, то uiState.isEditing станет false,
+                    // и экран детализации будет отображать данные из UiState, которые должны быть актуальны.
+                    // Перезагрузка может быть полезна для полной синхронизации с БД, если DAO делает что-то еще.
+                    // Но для оптимизации, если switchToViewModeAfterSave, можно не вызывать loadNoteData(),
+                    // так как hasUnsavedChanges теперь будет корректно работать с обновленными original* полями.
+                    if (switchToViewModeAfterSave) {
+                        // Можно решить, нужна ли здесь перезагрузка. Если original* обновлены, UiState
+                        // уже отражает сохраненное состояние для режима просмотра.
+                        // loadNoteData() // Опционально, для полной уверенности.
+                    }
+
                 } else {
                     _uiState.update { it.copy(isSaving = false, error = "Failed to save note") }
                 }
@@ -690,18 +742,16 @@ class NoteDetailViewModel @Inject constructor(
         }
     }
 
-
     fun hasUnsavedChanges(): Boolean {
         val titleChanged = _uiState.value.noteTitle != originalNoteTitle
 
-        // Получаем текущий HTML из редактора (вероятно, с сущностями)
         val currentHtmlFromEditorWithEntities = richTextState.toHtml()
-        // Декодируем его с помощью Jsoup для сравнения
         val currentHtmlDecoded = Parser.unescapeEntities(currentHtmlFromEditorWithEntities, false)
-
-        // originalHtmlContent уже хранит HTML с прямыми символами
         val contentChanged = currentHtmlDecoded != originalHtmlContent
+
         val reminderChanged = _uiState.value.reminderAt != originalReminderAt
+        val categoryChanged =
+            _uiState.value.selectedCategory.name != originalCategoryName // ПРОВЕРКА ИЗМЕНЕНИЯ КАТЕГОРИИ
 
         if (titleChanged) Log.d(TAG, "hasUnsavedChanges: titleChanged = true")
         if (contentChanged) Log.d(
@@ -714,12 +764,14 @@ class NoteDetailViewModel @Inject constructor(
             TAG,
             "hasUnsavedChanges: reminderChanged = true (Original: $originalReminderAt, Current: ${_uiState.value.reminderAt})"
         )
+        if (categoryChanged) Log.d(
+            TAG,
+            "hasUnsavedChanges: categoryChanged = true (Original: $originalCategoryName, Current: ${_uiState.value.selectedCategory.name})"
+        )
 
-        return titleChanged || contentChanged || reminderChanged
+        return titleChanged || contentChanged || reminderChanged || categoryChanged // ДОБАВЛЯЕМ categoryChanged В УСЛОВИЕ
     }
 
-
-    // --- Text Formatting ---
     fun toggleBoldSelection() {
         if (canApplyStyleToSelection()) richTextState.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold))
     }
@@ -747,7 +799,7 @@ class NoteDetailViewModel @Inject constructor(
     private fun canApplyStyleToSelection(): Boolean {
         val text = richTextState.annotatedString.text
         val selection = richTextState.selection
-        if (selection.collapsed) return true // Если нет выделения, стиль применяется к следующему вводимому тексту
+        if (selection.collapsed) return true
 
         val regex = Regex(
             Regex.escape(AUDIO_PLACEHOLDER_PREFIX) + "\\s*\\d+\\s*" + Regex.escape(
@@ -755,22 +807,28 @@ class NoteDetailViewModel @Inject constructor(
             )
         )
         regex.findAll(text).forEach { matchResult ->
-            // Проверяем пересечение выделения и плейсхолдера
             if (selection.start < matchResult.range.last + 1 && matchResult.range.first < selection.end) {
                 Log.d(
                     TAG,
                     "Style application denied: selection intersects with audio placeholder '${matchResult.value}'"
                 )
-                _uiState.update { it.copy(error = "Cannot apply style to audio placeholder.") } // Сообщаем пользователю
+                _uiState.update { it.copy(error = "Cannot apply style to audio placeholder.") }
                 return false
             }
         }
-        _uiState.update { it.copy(error = null) } // Сбрасываем ошибку, если стиль можно применить
+        _uiState.update { it.copy(error = null) }
         return true
     }
 
     fun onReminderIconClick() {
-        // Сначала проверяем разрешение на уведомления (для Android 13+)
+        // **Разрешаем открывать диалог только в режиме редактирования**
+        if (!_uiState.value.isEditing) {
+            // В режиме просмотра ничего не делаем при клике, или можно показать Snackbar "Edit note to change reminder"
+            Log.d(TAG, "Reminder icon clicked in view mode. No action.")
+            // _uiState.update { it.copy(error = "Edit note to set/change reminder.") } // Опционально
+            return
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             when (ContextCompat.checkSelfPermission(
                 appContext,
@@ -778,7 +836,6 @@ class NoteDetailViewModel @Inject constructor(
             )) {
                 PackageManager.PERMISSION_GRANTED -> {
                     Log.d(TAG, "Notification permission already granted.")
-                    // Разрешение есть, показываем диалог
                     _uiState.update {
                         it.copy(
                             notificationPermissionStatus = NotificationPermissionStatus.GRANTED,
@@ -792,12 +849,10 @@ class NoteDetailViewModel @Inject constructor(
                         TAG,
                         "Notification permission NOT granted. Setting status to DENIED to trigger UI request."
                     )
-                    // Разрешение не дано, нужно его запросить. Устанавливаем статус для UI, чтобы он инициировал запрос.
                     _uiState.update { it.copy(notificationPermissionStatus = NotificationPermissionStatus.DENIED) }
                 }
             }
         } else {
-            // На версиях < Android 13 разрешение не требуется
             Log.d(TAG, "Android version < TIRAMISU, no notification permission needed.")
             _uiState.update {
                 it.copy(
@@ -813,7 +868,6 @@ class NoteDetailViewModel @Inject constructor(
     }
 
     fun onSetReminder(dateTimeMillis: Long) {
-        // Проверяем, что выбранное время в будущем
         if (dateTimeMillis <= System.currentTimeMillis()) {
             _uiState.update { it.copy(error = "Please select a future time for the reminder.") }
             return
@@ -821,23 +875,21 @@ class NoteDetailViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 reminderAt = dateTimeMillis,
-                showReminderDialog = false, // Закрываем диалог после установки
-                error = null // Сбрасываем ошибку
+                showReminderDialog = false,
+                error = null
             )
         }
         Log.d(TAG, "Reminder set in ViewModel to: $dateTimeMillis")
-        // Сохранение и планирование Worker'а произойдет при вызове saveNote()
     }
 
     fun onClearReminder() {
         _uiState.update {
             it.copy(
                 reminderAt = null,
-                showReminderDialog = false // Закрываем диалог после очистки
+                showReminderDialog = false
             )
         }
         Log.d(TAG, "Reminder cleared in ViewModel.")
-        // Отмена Worker'а произойдет при вызове saveNote()
     }
 
     private fun scheduleOrCancelReminderWorker(
@@ -845,10 +897,9 @@ class NoteDetailViewModel @Inject constructor(
         noteTitle: String,
         reminderTimeMillis: Long?
     ) {
-        val workTag = "reminder_note_$noteId" // Уникальный тег для работы этой заметки
+        val workTag = "reminder_note_$noteId"
 
         if (reminderTimeMillis != null && reminderTimeMillis > System.currentTimeMillis()) {
-            // Если есть время напоминания и оно в будущем, планируем Worker
             val initialDelay = reminderTimeMillis - System.currentTimeMillis()
             Log.i(
                 TAG,
@@ -863,29 +914,26 @@ class NoteDetailViewModel @Inject constructor(
             val reminderWorkRequest = OneTimeWorkRequestBuilder<ReminderWorker>()
                 .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
                 .setInputData(data)
-                .addTag(workTag) // Добавляем тег для возможности отмены по нему
+                .addTag(workTag)
                 .build()
 
             workManager.enqueueUniqueWork(
-                workTag, // Уникальное имя для этой работы
-                ExistingWorkPolicy.REPLACE, // Заменить существующую работу, если она есть
+                workTag,
+                ExistingWorkPolicy.REPLACE,
                 reminderWorkRequest
             )
             Log.i(TAG, "Work request enqueued/replaced for tag: $workTag")
         } else {
-            // Если время напоминания null или в прошлом, отменяем существующий Worker
             Log.i(
                 TAG,
                 "Cancelling any existing reminder for note $noteId. Tag: $workTag. ReminderTime: $reminderTimeMillis"
             )
-            workManager.cancelUniqueWork(workTag) // Отменяем работу по уникальному имени (тегу)
+            workManager.cancelUniqueWork(workTag)
             Log.i(TAG, "Work request cancelled for tag: $workTag")
         }
     }
 
     fun resetNotificationPermissionStatusRequest() {
-        // Сбрасываем статус запроса, чтобы UI не запрашивал разрешение повторно без явного действия пользователя
-        // Это важно, если пользователь отклонил запрос, а потом снова кликнул на иконку напоминания.
         if (_uiState.value.notificationPermissionStatus == NotificationPermissionStatus.DENIED) {
             _uiState.update { it.copy(notificationPermissionStatus = NotificationPermissionStatus.UNDETERMINED) }
         }
@@ -897,10 +945,9 @@ class NoteDetailViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // Освобождаем ресурсы
         if (audioRecorder.isRecording()) {
             audioRecorder.stopRecording()
-                ?.let { File(it).delete() } // Остановить и удалить незаконченный файл
+                ?.let { File(it).delete() }
         }
         audioPlayer.release()
         speechProcessor.release()

@@ -12,7 +12,7 @@ import com.myprojects.audionotes.util.Converters // Импортируем на�
 
 @Database(
     entities = [Note::class, NoteBlock::class],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 @TypeConverters(Converters::class) // Регистрируем конвертер

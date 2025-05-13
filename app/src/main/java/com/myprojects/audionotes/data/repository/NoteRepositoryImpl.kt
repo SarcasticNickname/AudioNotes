@@ -2,6 +2,7 @@ package com.myprojects.audionotes.data.repository
 
 import android.content.Context
 import android.util.Log
+import androidx.sqlite.db.SupportSQLiteQuery
 import com.myprojects.audionotes.data.local.dao.NoteDao
 import com.myprojects.audionotes.data.local.entity.BlockType
 import com.myprojects.audionotes.data.local.entity.Note
@@ -21,7 +22,41 @@ class NoteRepositoryImpl @Inject constructor(
     @ApplicationContext private val appContext: Context
 ) : NoteRepository {
 
-    override fun getAllNotes(): Flow<List<Note>> = noteDao.getAllNotes()
+    override fun getNotes(query: SupportSQLiteQuery): Flow<List<Note>> {
+        return noteDao.getNotes(query)
+    }
+
+    override fun getArchivedNotes(query: SupportSQLiteQuery): Flow<List<Note>> {
+        return noteDao.getArchivedNotes(query)
+    }
+
+    override suspend fun setArchivedStatus(noteId: Long, isArchived: Boolean) {
+        withContext(Dispatchers.IO) {
+            // Передаем текущее время для updatedAt
+            noteDao.setArchivedStatus(noteId, isArchived, System.currentTimeMillis())
+        }
+    }
+
+    override suspend fun getAllNotesForBackup(): List<Note> {
+        return withContext(Dispatchers.IO) {
+            noteDao.getAllNotesForBackup()
+        }
+    }
+
+    override suspend fun replaceAllNotesFromBackup(notes: List<Note>) {
+        withContext(Dispatchers.IO) {
+            // Эта операция заменит существующие заметки с такими же ID
+            // или вставит новые, если ID не совпадают.
+            // Локальные заметки, которых нет в бэкапе, останутся нетронутыми, если не удалить их предварительно.
+            // Для полного "восстановления как было в бэкапе", возможно, потребуется сначала удалить все локальные заметки.
+            // Но текущая реализация просто добавляет/обновляет.
+            noteDao.insertOrReplaceNotes(notes)
+            Log.i(
+                "NoteRepository",
+                "${notes.size} notes processed from backup (inserted/replaced)."
+            )
+        }
+    }
 
     override fun getNoteWithContentAndAudioBlocks(noteId: Long): Flow<NoteWithContentAndAudioBlocks?> =
         noteDao.getNoteWithContentAndAudioBlocksById(noteId)
@@ -29,18 +64,21 @@ class NoteRepositoryImpl @Inject constructor(
     override suspend fun saveNote(note: Note, audioBlocks: List<NoteBlock>): Long {
         return withContext(Dispatchers.IO) {
             try {
-                // DAO теперь сам заботится о синхронизации ID в note.content
                 noteDao.saveNoteAndAudioBlocks(note, audioBlocks)
             } catch (e: Exception) {
                 Log.e("NoteRepository", "Error saving note and audio blocks", e)
-                if (note.id != 0L) note.id else -1L // Возвращаем ID заметки или -1 при ошибке
+                if (note.id != 0L) note.id else -1L
             }
         }
     }
 
     override suspend fun createNewNote(): Long {
         return withContext(Dispatchers.IO) {
-            val newNote = Note(title = "New Note", content = "")
+            val newNote = Note(
+                title = "New Note",
+                content = "",
+                isArchived = false
+            ) // Явно указываем isArchived = false
             try {
                 noteDao.saveNoteAndAudioBlocks(newNote, emptyList())
             } catch (e: Exception) {
@@ -58,7 +96,6 @@ class NoteRepositoryImpl @Inject constructor(
                     if (!block.audioFilePath.isNullOrEmpty()) {
                         try {
                             File(block.audioFilePath).delete()
-                            Log.i("NoteRepository", "Deleted audio file: ${block.audioFilePath}")
                         } catch (e: Exception) {
                             Log.e(
                                 "NoteRepository",
@@ -72,6 +109,7 @@ class NoteRepositoryImpl @Inject constructor(
                 if (noteToDelete != null) {
                     noteDao.deleteNote(noteToDelete)
                 } else {
+
                 }
             } catch (e: Exception) {
                 Log.e("NoteRepository", "Error deleting note by id: $noteId", e)
