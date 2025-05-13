@@ -22,7 +22,7 @@ fun String.unescapeFromHtmlPlaceholder(): String =
 fun String.cleanAudioPlaceholdersForRegex(): String =
     this.unescapeFromHtmlPlaceholder()
         .replace("\u200B", "")
-        .replace("\u00A0", "")
+        .replace("\u00A0", " ")
 
 @Dao
 interface NoteDao {
@@ -61,46 +61,56 @@ interface NoteDao {
     @Query("DELETE FROM note_blocks WHERE noteId = :noteId AND type = :type")
     suspend fun deleteAllAudioBlocksByNoteId(noteId: Long, type: BlockType = BlockType.AUDIO)
 
+    @Query("SELECT * FROM notes WHERE category = :categoryName ORDER BY updatedAt DESC")
+    fun getNotesByCategory(categoryName: String): Flow<List<Note>>
+
     @Query("SELECT * FROM note_blocks WHERE noteId = :noteId AND type = :type ORDER BY orderIndex ASC")
     suspend fun getAudioBlocksForNote(
         noteId: Long,
         type: BlockType = BlockType.AUDIO
     ): List<NoteBlock>
 
+    // -------- ЕДИНАЯ точка сохранения --------
     @Transaction
     suspend fun saveNoteAndAudioBlocks(
         noteToSave: Note,
         audioBlocksToSave: List<NoteBlock>
     ): Long {
+        // 0. Готовим временный HTML (ID ещё временные)
+        var html = noteToSave.content
 
-        val noteId = if (noteToSave.id == 0L) insertNote(noteToSave)
+        // 1. Сохраняем саму заметку (insert / update) СРАЗУ с "сырым" HTML
+        val noteId = if (noteToSave.id == 0L)
+            insertNote(noteToSave.copy(content = html))
         else {
-            updateNote(noteToSave); noteToSave.id
+            updateNote(noteToSave.copy(content = html)); noteToSave.id
         }
 
-        // 1. Чистим старые блоки и вставляем новые
+        // 2. Перезаписываем аудио‑блоки
         deleteAllAudioBlocksByNoteId(noteId)
         val realIds = insertAudioBlocks(
-            audioBlocksToSave.mapIndexed { i, blk ->
-                blk.copy(id = 0L, noteId = noteId, orderIndex = i)
+            audioBlocksToSave.mapIndexed { index, blk ->
+                blk.copy(id = 0L, noteId = noteId, orderIndex = index)
             }
         )
 
-        // 2. Готовим карту temp → real
-        val idMap = audioBlocksToSave.mapIndexed { i, tmpBlk ->
-            tmpBlk.id to realIds[i]
-        }.toMap()
-
-        // 3. Заменяем _escaped_ плейсхолдеры
-        var html = noteToSave.content
-        idMap.forEach { (tmpId, realId) ->
-            val oldEsc = createAudioPlaceholder(tmpId).escapeForHtmlPlaceholder()
-            val newEsc = createAudioPlaceholder(realId).escapeForHtmlPlaceholder()
-            html = html.replace(oldEsc, newEsc, /*ignoreCase =*/ false)
+        // 3. Подмена временных ID на реальные прямо в строке html
+        audioBlocksToSave.forEachIndexed { i, tmpBlk ->
+            val oldRaw = createAudioPlaceholder(tmpBlk.id)
+            val newRaw = createAudioPlaceholder(realIds[i])
+            if (oldRaw != newRaw) html = html.replace(oldRaw, newRaw)
         }
 
-        // 4. Обновляем note c уже «правильным» HTML
-        updateNote(noteToSave.copy(content = html, updatedAt = System.currentTimeMillis()))
+        // 4. Если html изменился – обновляем только поле content
+        if (html != noteToSave.content) {
+            updateNote(
+                noteToSave.copy(
+                    id = noteId,
+                    content = html,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
         return noteId
     }
 }

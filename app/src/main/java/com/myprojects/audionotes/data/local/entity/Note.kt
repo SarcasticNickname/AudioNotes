@@ -10,5 +10,6 @@ data class Note(
     var content: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis(),
-    var reminderAt: Long? = null 
+    var reminderAt: Long? = null,
+    var category: String = NoteCategory.NONE.name
 )

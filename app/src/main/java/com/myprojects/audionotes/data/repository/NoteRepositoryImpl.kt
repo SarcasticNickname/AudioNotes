@@ -21,8 +21,6 @@ class NoteRepositoryImpl @Inject constructor(
     @ApplicationContext private val appContext: Context
 ) : NoteRepository {
 
-    // ... (существующие методы ...getAllNotes, getNoteWithContentAndAudioBlocks, saveNote, createNewNote, deleteNoteById, getNoteById)
-
     override fun getAllNotes(): Flow<List<Note>> = noteDao.getAllNotes()
 
     override fun getNoteWithContentAndAudioBlocks(noteId: Long): Flow<NoteWithContentAndAudioBlocks?> =

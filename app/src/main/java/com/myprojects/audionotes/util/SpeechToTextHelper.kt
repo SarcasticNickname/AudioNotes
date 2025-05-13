@@ -30,7 +30,11 @@ interface ISpeechToTextProcessor {
 
     fun startListening(languageCode: String = Locale.getDefault().toLanguageTag())
     fun stopListening()
-    fun processActivityResult(resultCode: Int, data: Intent?) // Этот метод не нужен, т.к. SpeechRecognizer работает через Listener
+    fun processActivityResult(
+        resultCode: Int,
+        data: Intent?
+    ) // Этот метод не нужен, т.к. SpeechRecognizer работает через Listener
+
     fun release()
     fun isRecognitionAvailable(): Boolean
 }
@@ -40,6 +44,8 @@ interface ISpeechToTextProcessor {
 class SpeechToTextProcessorAndroid @Inject constructor(
     @ApplicationContext private val appContext: Context
 ) : ISpeechToTextProcessor, RecognitionListener {
+
+    private var recognizerBusy = false
 
     private var speechRecognizer: SpeechRecognizer? = null
 
@@ -60,14 +66,16 @@ class SpeechToTextProcessorAndroid @Inject constructor(
     }
 
     init {
+        // Инициализируем отложенно: если рантайм не поддерживает STT,
+        // просто фиксируем ошибку, но не падаем.
         if (isRecognitionAvailableInternal()) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext)
             speechRecognizer?.setRecognitionListener(this)
         } else {
             Log.e(TAG, "Speech recognition not available on this device.")
-            // Оповестить ViewModel или UI об этом состоянии
         }
     }
+
 
     override fun isRecognitionAvailable(): Boolean {
         return isRecognitionAvailableInternal()
@@ -79,33 +87,33 @@ class SpeechToTextProcessorAndroid @Inject constructor(
 
     override fun startListening(languageCode: String) {
         if (!isRecognitionAvailableInternal()) {
-            Log.e(TAG, "Attempted to start listening, but STT is not available.")
             _recognitionError.tryEmit("Speech recognition not available")
             return
         }
-        if (_isListening.value) {
-            Log.w(TAG, "Already listening.")
-            return
+
+        // если прошлый вызов упал с BUSY, пересоздаём инстанс
+        if (recognizerBusy) {
+            speechRecognizer?.destroy()
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext).also {
+                it.setRecognitionListener(this)
+            }
+            recognizerBusy = false
         }
+
+        if (_isListening.value) return // уже слушаем
+
         currentLanguage = languageCode
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, currentLanguage)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, currentLanguage)
-            putExtra(RecognizerIntent.EXTRA_SUPPORTED_LANGUAGES, arrayOf(currentLanguage))
-            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
-            // putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1) // Обычно достаточно одного лучшего результата
-            // putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true) // Если нужны промежуточные результаты
         }
         try {
             speechRecognizer?.startListening(intent)
-            // _isListening будет установлено в onReadyForSpeech
-            Log.d(TAG, "startListening called with language: $languageCode")
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting listening", e)
             _recognitionError.tryEmit("Error starting recognition: ${e.message}")
-            _isListening.value = false
         }
     }
 
@@ -140,9 +148,11 @@ class SpeechToTextProcessorAndroid @Inject constructor(
         Log.d(TAG, "onBeginningOfSpeech")
     }
 
-    override fun onRmsChanged(rmsdB: Float) { /* Optional: handle RMS dB changes */ }
+    override fun onRmsChanged(rmsdB: Float) { /* Optional: handle RMS dB changes */
+    }
 
-    override fun onBufferReceived(buffer: ByteArray?) { /* Optional: handle audio buffer */ }
+    override fun onBufferReceived(buffer: ByteArray?) { /* Optional: handle audio buffer */
+    }
 
     override fun onEndOfSpeech() {
         Log.d(TAG, "onEndOfSpeech")
@@ -150,10 +160,10 @@ class SpeechToTextProcessorAndroid @Inject constructor(
     }
 
     override fun onError(error: Int) {
-        val errorMessage = getErrorText(error)
-        Log.e(TAG, "onError: $error - $errorMessage")
+        val msg = getErrorText(error)
+        _recognitionError.tryEmit(msg)
         _isListening.value = false
-        _recognitionError.tryEmit(errorMessage)
+        recognizerBusy = (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)
     }
 
     override fun onResults(results: Bundle?) {
@@ -176,7 +186,8 @@ class SpeechToTextProcessorAndroid @Inject constructor(
         // if (!matches.isNullOrEmpty()) { _recognitionPartialResult.tryEmit(matches[0]) }
     }
 
-    override fun onEvent(eventType: Int, params: Bundle?) { /* Optional: handle specific events */ }
+    override fun onEvent(eventType: Int, params: Bundle?) { /* Optional: handle specific events */
+    }
 
     private fun getErrorText(errorCode: Int): String {
         return when (errorCode) {

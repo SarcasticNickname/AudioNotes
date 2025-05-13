@@ -1,17 +1,17 @@
 pluginManagement {
     repositories {
-        google() // Репозиторий Google для плагинов Android/Jetpack
-        mavenCentral() // Центральный репозиторий Maven
-        gradlePluginPortal() // Портал плагинов Gradle (важно для многих плагинов)
+        google()
+        mavenCentral()
+        gradlePluginPortal()
     }
 }
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS) // Рекомендуемая практика
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        google() // Репозиторий Google для библиотек
-        mavenCentral() // Центральный репозиторий Maven для библиотек
+        google()
+        mavenCentral()
     }
 }
 
-rootProject.name = "AudioNotes" // Имя твоего проекта
-include(":app") // Включаем модуль app в сборку
+rootProject.name = "AudioNotes"
+include(":app")

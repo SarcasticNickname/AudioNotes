@@ -1,6 +1,7 @@
 package com.myprojects.audionotes.ui.screens.notedetail
 
 import com.myprojects.audionotes.data.local.entity.NoteBlock
+import com.myprojects.audionotes.data.local.entity.NoteCategory
 import com.myprojects.audionotes.util.PlayerState
 
 data class NoteDetailUiState(
@@ -26,7 +27,9 @@ data class NoteDetailUiState(
     // Новые поля для напоминаний
     val reminderAt: Long? = null,
     val showReminderDialog: Boolean = false,
-    val notificationPermissionStatus: NotificationPermissionStatus = NotificationPermissionStatus.UNDETERMINED
+    val notificationPermissionStatus: NotificationPermissionStatus = NotificationPermissionStatus.UNDETERMINED,
+
+    val selectedCategory: NoteCategory = NoteCategory.NONE
 )
 
 enum class NotificationPermissionStatus {

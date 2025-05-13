@@ -105,8 +105,31 @@ dependencies {
 
     implementation(libs.richeditor.compose)
 
+    implementation("org.jsoup:jsoup:1.17.2")
 }
 
 hilt {
     enableAggregatingTask = true
+}
+
+afterEvaluate {
+    android.applicationVariants.all {
+        val variant = this
+        outputs.all {
+            val output = this
+            if (output is com.android.build.gradle.internal.api.BaseVariantOutputImpl) {
+                val apkFile = output.outputFile
+                if (apkFile != null && apkFile.name.endsWith(".apk")) {
+                    val copyTask = tasks.register<Copy>("copy${variant.name.capitalize()}Apk") {
+                        from(apkFile)
+                        into("${rootDir}/apk")
+                        rename { apkFile.name }
+                    }
+                    tasks.named(variant.assembleProvider.get().name).configure {
+                        finalizedBy(copyTask)
+                    }
+                }
+            }
+        }
+    }
 }

@@ -12,22 +12,25 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Circle
-import androidx.compose.material.icons.outlined.Notifications // Для иконки неактивного напоминания
+import androidx.compose.material.icons.outlined.Label // Иконка для категории
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.toArgb
@@ -46,6 +49,8 @@ import com.mohamedrejeb.richeditor.ui.material3.RichTextEditor
 import com.mohamedrejeb.richeditor.ui.material3.RichTextEditorDefaults
 import com.myprojects.audionotes.data.local.dao.cleanAudioPlaceholdersForRegex
 import com.myprojects.audionotes.data.local.entity.NoteBlock
+import com.myprojects.audionotes.data.local.entity.NoteCategory
+import com.myprojects.audionotes.ui.viewmodel.NoteDetailViewModel
 import com.myprojects.audionotes.util.AUDIO_PLACEHOLDER_PREFIX
 import com.myprojects.audionotes.util.AUDIO_PLACEHOLDER_SUFFIX
 import com.myprojects.audionotes.util.PlayerState
@@ -54,7 +59,7 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
-// Эти определения должны быть здесь или импортированы, если они в отдельном файле utils.
+// --- ViewContentPart, parseHtmlContentForViewMode, formatDuration, convertForHtmlCompat (остаются как были из твоего кода) ---
 sealed interface ViewContentPart
 data class TextPart(val htmlSegment: String) : ViewContentPart
 data class AudioPart(val block: NoteBlock) : ViewContentPart
@@ -72,11 +77,10 @@ fun parseHtmlContentForViewMode(
     )
     var lastIndex = 0
     val matches = regex.findAll(workingHtml).toList()
-
     if (matches.isEmpty()) {
-        if (workingHtml.isNotBlank() && workingHtml != "<p></p>" && workingHtml != "<p><br></p>" && workingHtml != "<p><br/></p>") {
-            parts.add(TextPart(workingHtml))
-        }
+        if (workingHtml.isNotBlank() && workingHtml != "<p></p>" && workingHtml != "<p><br></p>" && workingHtml != "<p><br/></p>") parts.add(
+            TextPart(workingHtml)
+        )
     } else {
         matches.forEach { matchResult ->
             val placeholderStart = matchResult.range.first
@@ -87,14 +91,12 @@ fun parseHtmlContentForViewMode(
             }
             val audioBlockId = matchResult.groupValues[1].toLongOrNull()
             audioBlockId?.let { id ->
-                availableAudioBlocks.find { it.id == id }
-                    ?.let { block -> parts.add(AudioPart(block)) }
-                    ?: run {
-                        parts.add(TextPart(matchResult.value)); Log.w(
-                        "ViewContentParser",
-                        "Audio block for placeholder ${matchResult.value} not found."
-                    )
-                    }
+                availableAudioBlocks.find { it.id == id }?.let { parts.add(AudioPart(it)) } ?: run {
+                    parts.add(TextPart(matchResult.value)); Log.w(
+                    "ViewContentParser",
+                    "Audio block for placeholder ${matchResult.value} not found."
+                )
+                }
             }
             lastIndex = placeholderEnd
         }
@@ -108,15 +110,15 @@ fun parseHtmlContentForViewMode(
 
 fun formatDuration(millis: Long?): String {
     if (millis == null || millis < 0) return "00:00"
-    val totalSeconds = millis / 1000
-    val minutes = totalSeconds / 60
+    val totalSeconds = millis / 1000;
+    val minutes = totalSeconds / 60;
     val seconds = totalSeconds % 60
     return String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
 }
 
 private val spanRegex = Regex("""<span\s+style="([^"]*)">(.*?)</span>""", RegexOption.IGNORE_CASE)
 fun String.convertForHtmlCompat(): String = spanRegex.replace(this) { m ->
-    val style = m.groupValues[1]
+    val style = m.groupValues[1];
     val inner = m.groupValues[2]
     val colorHex =
         Regex("""color:\s*rgba?\((\d+),\s*(\d+),\s*(\d+)""").find(style)?.destructured?.let { (r, g, b) ->
@@ -127,7 +129,7 @@ fun String.convertForHtmlCompat(): String = spanRegex.replace(this) { m ->
                 b.toInt()
             )
         }
-    val colorOpen = colorHex?.let { """<font color="$it">""" } ?: ""
+    val colorOpen = colorHex?.let { """<font color="$it">""" } ?: "";
     val colorClose = if (colorHex != null) "</font>" else ""
     val sizePx = Regex("""font-size:\s*(\d+)""").find(style)?.groupValues?.get(1)?.toIntOrNull()
     val (sizeOpen, sizeClose) = when (sizePx) {
@@ -152,35 +154,26 @@ fun NoteDetailScreen(
         uiState.isEditing
     ) {
         derivedStateOf {
-            if (!uiState.isEditing && uiState.initialHtmlContentForEditor != null) {
-                parseHtmlContentForViewMode(
-                    uiState.initialHtmlContentForEditor,
-                    uiState.displayedAudioBlocks
-                )
-            } else {
-                emptyList()
-            }
+            if (!uiState.isEditing && uiState.initialHtmlContentForEditor != null) parseHtmlContentForViewMode(
+                uiState.initialHtmlContentForEditor,
+                uiState.displayedAudioBlocks
+            ) else emptyList()
         }
     }
 
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-        onResult = viewModel::onPermissionResult
+        ActivityResultContracts.RequestPermission(),
+        viewModel::onPermissionResult
     )
-
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-        onResult = viewModel::onNotificationPermissionResult
+        ActivityResultContracts.RequestPermission(),
+        viewModel::onNotificationPermissionResult
     )
 
-    // Побочный эффект для запроса разрешения на уведомления
     LaunchedEffect(uiState.notificationPermissionStatus) {
         if (uiState.notificationPermissionStatus == NotificationPermissionStatus.DENIED) {
-            // ViewModel установил статус DENIED, значит, нужно запросить разрешение
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                Log.d("NoteDetailScreen", "Requesting notification permission from LaunchedEffect.")
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                // Сбрасываем статус, чтобы не запрашивать повторно без действия пользователя
                 viewModel.resetNotificationPermissionStatusRequest()
             }
         }
@@ -188,32 +181,32 @@ fun NoteDetailScreen(
 
     if (uiState.showReminderDialog) {
         ReminderDateTimePickerDialog(
-            initialDateTimeMillis = uiState.reminderAt,
-            onDateTimeSelected = { millis -> viewModel.onSetReminder(millis) },
-            onDismiss = viewModel::onDismissReminderDialog,
-            onClearReminder = viewModel::onClearReminder
+            uiState.reminderAt,
+            viewModel::onSetReminder,
+            viewModel::onDismissReminderDialog,
+            viewModel::onClearReminder
         )
     }
 
-    BackHandler(enabled = true) {
+    BackHandler(true) {
         if (uiState.isEditing) {
             if (uiState.isSpeechToTextActive) viewModel.handleSpeechToTextButtonPress()
-            else if (viewModel.hasUnsavedChanges()) viewModel.saveNote(switchToViewModeAfterSave = true)
+            else if (viewModel.hasUnsavedChanges()) viewModel.saveNote(true)
             else viewModel.toggleEditMode()
-        } else {
-            navController.popBackStack()
-        }
+        } else navController.popBackStack()
     }
 
     val showFormattingPanel = uiState.isEditing
     val bodyLargeFontSizeSp = MaterialTheme.typography.bodyLarge.fontSize.value
     val onSurfaceColorArgb = MaterialTheme.colorScheme.onSurface.toArgb()
 
+    var showCategoryMenu by remember { mutableStateOf(false) } // Состояние для отображения меню категорий
+
     Scaffold(
         topBar = {
             Column {
                 TopAppBar(
-                    title = {
+                    title = { /* Заголовок без изменений */
                         if (uiState.isEditing) BasicTextField(
                             value = uiState.noteTitle,
                             onValueChange = viewModel::updateNoteTitle,
@@ -242,7 +235,7 @@ fun NoteDetailScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                     },
-                    navigationIcon = {
+                    navigationIcon = { /* Кнопка назад без изменений */
                         IconButton(onClick = {
                             if (uiState.isEditing) {
                                 if (uiState.isSpeechToTextActive) viewModel.handleSpeechToTextButtonPress()
@@ -252,38 +245,106 @@ fun NoteDetailScreen(
                         }) { Icon(Icons.Filled.ArrowBack, "Go back") }
                     },
                     actions = {
+                        // Кнопка выбора категории (только в режиме редактирования)
+                        if (uiState.isEditing) {
+                            Box { // Обертка для позиционирования DropdownMenu
+                                IconButton(onClick = { showCategoryMenu = true }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Label, // Иконка для категорий
+                                        contentDescription = "Select Category",
+                                        tint = if (uiState.selectedCategory != NoteCategory.NONE) uiState.selectedCategory.color else LocalContentColor.current.copy(
+                                            alpha = 0.6f
+                                        )
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showCategoryMenu,
+                                    onDismissRequest = { showCategoryMenu = false }
+                                ) {
+                                    NoteCategory.entries.forEach { category -> // Показываем все, включая NONE
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(16.dp)
+                                                            .clip(CircleShape)
+                                                            .background(category.color)
+                                                            .border(
+                                                                1.dp,
+                                                                MaterialTheme.colorScheme.onSurface.copy(
+                                                                    alpha = 0.3f
+                                                                ),
+                                                                CircleShape
+                                                            )
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(category.displayName)
+                                                }
+                                            },
+                                            onClick = {
+                                                viewModel.onCategorySelected(category)
+                                                showCategoryMenu = false
+                                            },
+                                            leadingIcon = if (uiState.selectedCategory == category) {
+                                                {
+                                                    Icon(
+                                                        Icons.Filled.Check,
+                                                        contentDescription = "Selected",
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            } else null
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Кнопка Напоминания
                         IconButton(onClick = { viewModel.onReminderIconClick() }) {
                             val reminderSetAndFuture =
                                 uiState.reminderAt != null && (uiState.reminderAt
                                     ?: 0) > System.currentTimeMillis()
                             Icon(
-                                imageVector = if (reminderSetAndFuture) Icons.Filled.NotificationsActive else Icons.Outlined.Notifications,
-                                contentDescription = "Set Reminder",
+                                if (reminderSetAndFuture) Icons.Filled.NotificationsActive else Icons.Outlined.Notifications,
+                                "Set Reminder",
                                 tint = if (reminderSetAndFuture) MaterialTheme.colorScheme.primary else LocalContentColor.current
                             )
                         }
+
+                        // Кнопка Сохранить (в режиме редактирования) или Удалить/Редактировать (в режиме просмотра)
                         if (uiState.isEditing) {
                             IconButton(
-                                onClick = { viewModel.saveNote(switchToViewModeAfterSave = true) },
+                                onClick = { viewModel.saveNote(true) },
                                 enabled = !uiState.isSaving && viewModel.hasUnsavedChanges() && !uiState.isSpeechToTextActive && !uiState.isRecording
                             ) {
-                                if (uiState.isSaving) CircularProgressIndicator(Modifier.size(24.dp))
-                                else Icon(Icons.Filled.Done, "Save Note")
+                                if (uiState.isSaving) CircularProgressIndicator(Modifier.size(24.dp)) else Icon(
+                                    Icons.Filled.Done,
+                                    "Save"
+                                )
                             }
                         } else {
                             IconButton(onClick = { /* TODO: Confirm delete */ }) {
-                                Icon(Icons.Filled.DeleteOutline, "Delete Note")
+                                Icon(
+                                    Icons.Filled.DeleteOutline,
+                                    "Delete"
+                                )
                             }
                             IconButton(onClick = { viewModel.toggleEditMode() }) {
-                                Icon(Icons.Filled.Edit, "Edit Note")
+                                Icon(
+                                    Icons.Filled.Edit,
+                                    "Edit"
+                                )
                             }
                         }
                     }
                 )
+                // Панель форматирования (без изменений)
                 AnimatedVisibility(
                     visible = showFormattingPanel,
-                    enter = slideInVertically { fullHeight -> -fullHeight },
-                    exit = slideOutVertically { fullHeight -> -fullHeight }) {
+                    enter = slideInVertically { -it },
+                    exit = slideOutVertically { -it }) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -296,52 +357,52 @@ fun NoteDetailScreen(
                         IconButton(onClick = { viewModel.toggleBoldSelection() }) {
                             Icon(
                                 Icons.Filled.FormatBold,
-                                "Bold"
+                                "B"
                             )
                         }
                         IconButton(onClick = { viewModel.toggleItalicSelection() }) {
                             Icon(
                                 Icons.Filled.FormatItalic,
-                                "Italic"
+                                "I"
                             )
                         }
                         IconButton(onClick = { viewModel.toggleUnderlineSelection() }) {
                             Icon(
                                 Icons.Filled.FormatUnderlined,
-                                "Underline"
+                                "U"
                             )
                         }
                         IconButton(onClick = { viewModel.toggleStrikethroughSelection() }) {
                             Icon(
                                 Icons.Filled.FormatStrikethrough,
-                                "Strikethrough"
+                                "S"
                             )
                         }
                         VerticalDivider()
                         IconButton(onClick = { viewModel.changeTextColor(Color.Unspecified) }) {
                             Icon(
                                 Icons.Filled.FormatColorReset,
-                                "Default Color"
+                                "Clr"
                             )
                         }
                         IconButton(onClick = { viewModel.changeTextColor(Color.Red) }) {
                             Icon(
                                 Icons.Outlined.Circle,
-                                "Red Text",
+                                "R",
                                 tint = Color.Red
                             )
                         }
                         IconButton(onClick = { viewModel.changeTextColor(Color.Blue) }) {
                             Icon(
                                 Icons.Outlined.Circle,
-                                "Blue Text",
+                                "Bl",
                                 tint = Color.Blue
                             )
                         }
                         IconButton(onClick = { viewModel.changeTextColor(Color(0xFF006400)) }) {
                             Icon(
                                 Icons.Outlined.Circle,
-                                "Green Text",
+                                "G",
                                 tint = Color(0xFF006400)
                             )
                         }
@@ -349,54 +410,90 @@ fun NoteDetailScreen(
                         IconButton(onClick = { viewModel.setFontSize(12.sp) }) {
                             Text(
                                 "S",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                style = MaterialTheme.typography.labelMedium
                             )
                         }
                         IconButton(onClick = { viewModel.setFontSize(16.sp) }) {
                             Text(
                                 "M",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                style = MaterialTheme.typography.labelMedium
                             )
                         }
                         IconButton(onClick = { viewModel.setFontSize(20.sp) }) {
                             Text(
                                 "L",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                style = MaterialTheme.typography.labelMedium
                             )
                         }
                     }
                 }
+                // Отображение выбранной категории под TopAppBar в режиме просмотра (если она не NONE)
+                if (!uiState.isEditing && uiState.selectedCategory != NoteCategory.NONE) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 4.dp,
+                                bottom = 0.dp
+                            ) // Уменьшил нижний отступ
+                            //.background(MaterialTheme.colorScheme.surfaceColorAtElevation(1.dp), RoundedCornerShape(8.dp)) // Можно убрать фон, если мешает
+                            .padding(
+                                horizontal = 0.dp,
+                                vertical = 4.dp
+                            ) // Убрал горизонтальный, чтобы было ближе к заголовку
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(uiState.selectedCategory.color)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = uiState.selectedCategory.displayName,
+                            style = MaterialTheme.typography.labelMedium, // LabelMedium или BodySmall
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
         },
+        // ВОЗВРАЩАЕМ FLOATING ACTION BUTTON ИЗ ТВОЕГО ИСХОДНОГО КОДА
         floatingActionButton = {
             if (uiState.isEditing) {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     FloatingActionButton(
                         onClick = {
-                            if (!uiState.isRecording) {
-                                if (uiState.permissionGranted) viewModel.handleSpeechToTextButtonPress()
-                                else recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            if (!uiState.isRecording) { // Не запускать STT, если идет обычная запись
+                                if (uiState.permissionGranted) {
+                                    viewModel.handleSpeechToTextButtonPress()
+                                } else {
+                                    recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
                             }
                         },
                         containerColor = if (uiState.isSpeechToTextActive) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         Icon(
                             if (uiState.isSpeechToTextActive) Icons.Filled.StopCircle else Icons.Filled.RecordVoiceOver,
-                            "STT"
+                            contentDescription = if (uiState.isSpeechToTextActive) "Остановить распознавание" else "Распознать речь"
                         )
                     }
+
                     FloatingActionButton(
                         onClick = {
-                            if (!uiState.isSpeechToTextActive && !uiState.isSaving) viewModel.handleRecordButtonPress()
+                            if (!uiState.isSpeechToTextActive && !uiState.isSaving) { // Не запускаем запись, если STT активен или идет сохранение
+                                viewModel.handleRecordButtonPress()
+                            }
                         },
                         containerColor = if (uiState.isRecording) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
                     ) {
                         Icon(
                             if (uiState.isRecording) Icons.Filled.StopCircle else Icons.Filled.Mic,
-                            "Record"
+                            contentDescription = if (uiState.isRecording) "Остановить запись" else "Начать запись"
                         )
                     }
                 }
@@ -407,9 +504,17 @@ fun NoteDetailScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
-                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 72.dp)
+                .padding(paddingValues) // Применяем отступы от Scaffold (включая TopAppBar)
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 8.dp,
+                    bottom = 72.dp
+                ) // Дополнительные отступы для контента
         ) {
+            // --- Содержимое LazyColumn (редактор, плееры) остается БЕЗ ИЗМЕНЕНИЙ ---
+            // То есть, вся логика отображения RichTextEditor, AudioPlayerItem,
+            // состояний загрузки, ошибок и пустого состояния остается такой же, как в твоем исходном коде.
             if (uiState.isLoading && (uiState.noteId == null || uiState.noteId == -1L || (uiState.noteId != 0L && uiState.initialHtmlContentForEditor == null))) {
                 item {
                     Box(
@@ -438,18 +543,22 @@ fun NoteDetailScreen(
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 200.dp),
                             colors = RichTextEditorDefaults.richTextEditorColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(
+                                    alpha = 0.3f
+                                ),
                                 focusedIndicatorColor = Color.Transparent,
                                 unfocusedIndicatorColor = Color.Transparent
                             ),
                             placeholder = { Text("Write your note here...") }
                         )
                     }
-                    if (uiState.displayedAudioBlocks.isNotEmpty()) {
+                    // Отображение аудио-плееров в режиме редактирования
+                    if (uiState.displayedAudioBlocks.isNotEmpty()) { // Показываем всегда, если есть
                         item {
-                            Spacer(Modifier.height(16.dp))
-                            Text("Attached Audio:", style = MaterialTheme.typography.titleSmall)
-                            Spacer(Modifier.height(8.dp))
+                            Spacer(Modifier.height(16.dp)); Text(
+                            "Attached Audio:",
+                            style = MaterialTheme.typography.titleSmall
+                        ); Spacer(Modifier.height(8.dp))
                         }
                         items(
                             items = uiState.displayedAudioBlocks,
@@ -461,7 +570,7 @@ fun NoteDetailScreen(
                                 if (uiState.currentPlayingAudioBlockId == block.id) uiState.currentAudioPositionMs else 0,
                                 (block.audioDurationMs ?: 0L).toInt(),
                                 { viewModel.playAudio(block.id) },
-                                { viewModel.deleteAudioBlockFromPlayer(block.id) },
+                                { viewModel.deleteAudioBlockFromPlayer(block.id) }, // Кнопка удаления активна
                                 { progress ->
                                     viewModel.onSeekAudio(
                                         block.id,
@@ -472,7 +581,7 @@ fun NoteDetailScreen(
                             )
                         }
                     }
-                } else { // View mode
+                } else { // Режим просмотра
                     if (contentPartsForViewMode.isEmpty() && (uiState.initialHtmlContentForEditor.isNullOrBlank() || uiState.initialHtmlContentForEditor == "<p></p>" || uiState.initialHtmlContentForEditor == "<p><br></p>" || uiState.initialHtmlContentForEditor == "<p><br/></p>")) {
                         item {
                             Box(
@@ -492,11 +601,10 @@ fun NoteDetailScreen(
                                         TextView(ctx).apply {
                                             textSize = bodyLargeFontSizeSp; setTextColor(
                                             onSurfaceColorArgb
-                                        )
-                                            movementMethod =
-                                                LinkMovementMethod.getInstance(); isClickable =
-                                            false; isFocusable = false
-                                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                        ); movementMethod =
+                                            LinkMovementMethod.getInstance(); isClickable =
+                                            false; isFocusable =
+                                            false; setBackgroundColor(android.graphics.Color.TRANSPARENT)
                                         }
                                     },
                                     update = { tv ->
@@ -516,7 +624,8 @@ fun NoteDetailScreen(
                                     uiState.currentPlayingAudioBlockId == part.block.id && uiState.audioPlayerState == PlayerState.PAUSED,
                                     if (uiState.currentPlayingAudioBlockId == part.block.id) uiState.currentAudioPositionMs else 0,
                                     (part.block.audioDurationMs ?: 0L).toInt(),
-                                    { viewModel.playAudio(part.block.id) }, {},
+                                    { viewModel.playAudio(part.block.id) },
+                                    {}, // Нет кнопки удаления
                                     { progress ->
                                         viewModel.onSeekAudio(
                                             part.block.id,
@@ -532,7 +641,7 @@ fun NoteDetailScreen(
                 }
             }
         }
-
+        // Диалог запроса разрешения на микрофон (без изменений)
         if (uiState.showPermissionRationaleDialog && uiState.isEditing) {
             AlertDialog(
                 onDismissRequest = viewModel::onPermissionRationaleDismissed,
@@ -557,6 +666,7 @@ fun NoteDetailScreen(
     }
 }
 
+// --- ReminderDateTimePickerDialog, VerticalDivider, AudioPlayerItem (остаются БЕЗ ИЗМЕНЕНИЙ, как в твоем исходном коде или моем предыдущем полном варианте) ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReminderDateTimePickerDialog(
@@ -565,51 +675,42 @@ fun ReminderDateTimePickerDialog(
     onDismiss: () -> Unit,
     onClearReminder: () -> Unit
 ) {
-    val context = LocalContext.current
-    val calendar = remember { Calendar.getInstance() }
+    val context = LocalContext.current;
+    val calendar = remember { Calendar.getInstance() };
     val currentSystemTime = System.currentTimeMillis()
-
-    // Инициализация календаря для выбора:
-    // Если есть начальное время и оно в будущем, используем его.
-    // Иначе, используем текущее время + 5 минут (или другое значение по умолчанию).
     val initialPickerTime =
-        if (initialDateTimeMillis != null && initialDateTimeMillis > currentSystemTime) {
-            initialDateTimeMillis
-        } else {
-            currentSystemTime + TimeUnit.MINUTES.toMillis(5)
-        }
+        if (initialDateTimeMillis != null && initialDateTimeMillis > currentSystemTime) initialDateTimeMillis else currentSystemTime + TimeUnit.MINUTES.toMillis(
+            5
+        )
     calendar.timeInMillis = initialPickerTime
-
     val datePickerState = rememberDatePickerState(
         initialSelectedDateMillis = calendar.timeInMillis,
         selectableDates = object : SelectableDates {
             override fun isSelectableDate(utcTimeMillis: Long): Boolean {
                 val todayStart = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
-                    set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-                }.timeInMillis
-                return utcTimeMillis >= todayStart
+                    set(Calendar.HOUR_OF_DAY, 0); set(
+                    Calendar.MINUTE,
+                    0
+                ); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+                }.timeInMillis; return utcTimeMillis >= todayStart
             }
-        }
-    )
+        })
     val timePickerState = rememberTimePickerState(
         initialHour = calendar.get(Calendar.HOUR_OF_DAY),
         initialMinute = calendar.get(Calendar.MINUTE),
         is24Hour = android.text.format.DateFormat.is24HourFormat(context)
     )
-
-    var showDatePickerDialog by remember { mutableStateOf(true) }
+    var showDatePickerDialog by remember { mutableStateOf(true) };
     var showTimePickerDialog by remember { mutableStateOf(false) }
     val tempSelectedCalendar =
         remember { Calendar.getInstance().apply { timeInMillis = initialPickerTime } }
-
     val simpleDateFormat =
         remember { SimpleDateFormat("EEE, d MMM yyyy, HH:mm", Locale.getDefault()) }
     val currentReminderText = initialDateTimeMillis?.let {
-        if (it > currentSystemTime) "Текущее: ${simpleDateFormat.format(Date(it))}"
-        else if (it > 0) "Напоминание в прошлом" else null
+        if (it > currentSystemTime) "Текущее: ${
+            simpleDateFormat.format(Date(it))
+        }" else if (it > 0) "Напоминание в прошлом" else null
     }
-
     if (showDatePickerDialog) {
         DatePickerDialog(
             onDismissRequest = onDismiss,
@@ -617,14 +718,15 @@ fun ReminderDateTimePickerDialog(
                 TextButton(onClick = {
                     datePickerState.selectedDateMillis?.let {
                         tempSelectedCalendar.timeInMillis = it
-                    }
-                    showDatePickerDialog = false; showTimePickerDialog = true
+                    }; showDatePickerDialog = false; showTimePickerDialog = true
                 }) { Text("Далее") }
             },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
-        ) { DatePicker(state = datePickerState) }
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }) {
+            DatePicker(
+                state = datePickerState
+            )
+        }
     }
-
     if (showTimePickerDialog) {
         AlertDialog(
             onDismissRequest = onDismiss,
@@ -641,36 +743,39 @@ fun ReminderDateTimePickerDialog(
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
-                    }
-                    TimePicker(state = timePickerState, modifier = Modifier.fillMaxWidth())
+                    }; TimePicker(state = timePickerState, modifier = Modifier.fillMaxWidth())
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    tempSelectedCalendar.set(Calendar.HOUR_OF_DAY, timePickerState.hour)
-                    tempSelectedCalendar.set(Calendar.MINUTE, timePickerState.minute)
                     tempSelectedCalendar.set(
-                        Calendar.SECOND,
-                        0
-                    ); tempSelectedCalendar.set(Calendar.MILLISECOND, 0)
-                    if (tempSelectedCalendar.timeInMillis <= System.currentTimeMillis()) {
-                        // TODO: Показать Snackbar или сообщение об ошибке, что время должно быть в будущем
-                        Log.w("ReminderDialog", "Selected time is in the past or current.")
-                        return@TextButton
-                    }
-                    onDateTimeSelected(tempSelectedCalendar.timeInMillis)
+                        Calendar.HOUR_OF_DAY,
+                        timePickerState.hour
+                    ); tempSelectedCalendar.set(
+                    Calendar.MINUTE,
+                    timePickerState.minute
+                ); tempSelectedCalendar.set(
+                    Calendar.SECOND,
+                    0
+                ); tempSelectedCalendar.set(
+                    Calendar.MILLISECOND,
+                    0
+                ); if (tempSelectedCalendar.timeInMillis <= System.currentTimeMillis()) {
+                    Log.w("ReminderDialog", "Selected time is in the past."); return@TextButton
+                }; onDateTimeSelected(tempSelectedCalendar.timeInMillis)
                 }) { Text("Установить") }
             },
             dismissButton = {
                 Row {
                     if (initialDateTimeMillis != null && initialDateTimeMillis > 0) {
-                        TextButton(onClick = { onClearReminder() }) { Text("Удалить") }
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    TextButton(onClick = onDismiss) { Text("Отмена") }
+                        TextButton(onClick = { onClearReminder() }) { Text("Удалить") }; Spacer(
+                            Modifier.width(
+                                8.dp
+                            )
+                        )
+                    }; TextButton(onClick = onDismiss) { Text("Отмена") }
                 }
-            }
-        )
+            })
     }
 }
 
@@ -714,25 +819,26 @@ fun AudioPlayerItem(
                         .weight(1f)
                         .padding(end = 8.dp)
                 ) {
-                    Icon(Icons.Filled.GraphicEq, null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            "Audio Clip (ID: ${audioBlock.id % 1000})",
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                    Icon(
+                        Icons.Filled.GraphicEq,
+                        null,
+                        tint = MaterialTheme.colorScheme.primary
+                    ); Spacer(Modifier.width(12.dp)); Column {
+                    Text(
+                        "Audio Clip (ID: ${audioBlock.id % 1000})",
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    ); Text(
+                    "${formatDuration(currentPositionMs.toLong())} / ${
+                        formatDuration(
+                            totalDurationMs.toLong()
                         )
-                        Text(
-                            "${formatDuration(currentPositionMs.toLong())} / ${
-                                formatDuration(
-                                    totalDurationMs.toLong()
-                                )
-                            }",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    }",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onPlayPauseClick) {
@@ -741,17 +847,14 @@ fun AudioPlayerItem(
                             if (isPlaying) "Pause" else "Play",
                             Modifier.size(40.dp)
                         )
-                    }
-                    if (showDeleteButton) {
-                        IconButton(onClick = onDeleteClick) {
-                            Icon(
-                                Icons.Filled.DeleteOutline,
-                                "Delete audio clip",
-                                Modifier.size(32.dp),
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
+                    }; if (showDeleteButton) IconButton(onClick = onDeleteClick) {
+                    Icon(
+                        Icons.Filled.DeleteOutline,
+                        "Delete audio clip",
+                        Modifier.size(32.dp),
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
                 }
             }
             if (totalDurationMs > 0) {
@@ -761,30 +864,27 @@ fun AudioPlayerItem(
                     totalDurationMs,
                     isPlaying,
                     isPaused
-                ) {
-                    mutableStateOf(if (totalDurationMs > 0) currentPositionMs.toFloat() / totalDurationMs.toFloat() else 0f)
-                }
-                var isUserSeeking by remember { mutableStateOf(false) }
-                Slider(
-                    value = sliderValue.coerceIn(0f, 1f),
+                ) { mutableStateOf(if (totalDurationMs > 0) currentPositionMs.toFloat() / totalDurationMs.toFloat() else 0f) };
+                var isUserSeeking by remember { mutableStateOf(false) }; Slider(
+                    value = sliderValue.coerceIn(
+                        0f,
+                        1f
+                    ),
                     onValueChange = { newValue -> isUserSeeking = true; sliderValue = newValue },
                     onValueChangeFinished = { onSeek(sliderValue); isUserSeeking = false },
                     modifier = Modifier.fillMaxWidth()
-                )
-                LaunchedEffect(
+                ); LaunchedEffect(
                     currentPositionMs,
                     totalDurationMs,
                     audioBlock.id,
                     isPlaying,
                     isPaused
                 ) {
-                    if (!isUserSeeking) {
-                        sliderValue =
-                            if (totalDurationMs > 0) (currentPositionMs.toFloat() / totalDurationMs.toFloat()).coerceIn(
-                                0f,
-                                1f
-                            ) else 0f
-                    }
+                    if (!isUserSeeking) sliderValue =
+                        if (totalDurationMs > 0) (currentPositionMs.toFloat() / totalDurationMs.toFloat()).coerceIn(
+                            0f,
+                            1f
+                        ) else 0f
                 }
             }
         }
